@@ -44,8 +44,7 @@ temp_df['Date'] = pd.to_datetime(temp_df[['Year', 'Month', 'Day']])
 print("3. 기온과 공급량을 결합하고 숫자를 정제합니다...")
 supply_df['Date'] = pd.to_datetime(supply_df[DATE_COL_IN_SHEET])
 
-# 🚨 여기가 아까와 완전히 달라진 핵심 부분입니다! (정규표현식)
-# 숫자(\d)와 소수점(.)을 제외한 모든 문자(콤마, 공백, 특수기호 등)를 싹 다 지웁니다.
+# 🚨 정규표현식: 숫자(\d)와 소수점(.)을 제외한 모든 문자(콤마, 공백, 특수기호 등)를 싹 다 지웁니다.
 supply_df[TARGET_COL] = supply_df[TARGET_COL].astype(str).str.replace(r'[^\d.]', '', regex=True)
 
 # 지운 결과를 진짜 숫자(float)로 변환합니다. (에러 시 빈칸은 0으로 처리)
