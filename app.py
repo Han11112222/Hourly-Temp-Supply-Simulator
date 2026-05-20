@@ -3,12 +3,6 @@ import numpy as np
 from sklearn.ensemble import RandomForestRegressor
 import matplotlib.pyplot as plt
 
-# ==========================================
-# [설정] 
-# ==========================================
-TARGET_COL = '공급량합계'       
-DATE_COL_IN_SHEET = '날짜'      
-
 # ---------------------------------------------------------
 # 1. 데이터 로드
 # ---------------------------------------------------------
@@ -25,6 +19,14 @@ try:
 except Exception as e:
     print(f"   -> 구글 시트 로드 실패: {e}")
 
+# ==========================================
+# ★ 에러 영구 차단: 이름표 무시하고 위치로 자동 추적 ★
+DATE_COL_IN_SHEET = supply_df.columns[0] # 무조건 첫 번째 기둥
+TARGET_COL = supply_df.columns[1]        # 무조건 두 번째 기둥
+print(f"   -> 자동 인식된 날짜 기둥: [{DATE_COL_IN_SHEET}]")
+print(f"   -> 자동 인식된 공급량 기둥: [{TARGET_COL}]")
+# ==========================================
+
 # ---------------------------------------------------------
 # 2. 기온 파생 변수 (HDD 등) 생성
 # ---------------------------------------------------------
@@ -39,15 +41,13 @@ temp_df['HDD'] = temp_df[hour_cols].apply(lambda x: np.maximum(18 - x, 0)).sum(a
 temp_df['Date'] = pd.to_datetime(temp_df[['Year', 'Month', 'Day']])
 
 # ---------------------------------------------------------
-# 3. 데이터 병합 및 ★초강력 숫자 정제★
+# 3. 데이터 병합 및 초강력 숫자 정제 (콤마, 공백 강제 파괴)
 # ---------------------------------------------------------
-print("3. 기온과 공급량을 결합하고 콤마(,)와 공백을 강제 파괴합니다...")
+print("3. 기온과 공급량을 결합하고 숫자를 정제합니다...")
 supply_df['Date'] = pd.to_datetime(supply_df[DATE_COL_IN_SHEET])
 
-# 🚨 에러 원천 차단: 정규표현식을 사용하여 숫자(\d)와 소수점(.) 빼고 싹 다 지워버림!
+# 정규표현식(Regex)을 사용해 숫자와 소수점 빼고 싹 다 지워버림!
 supply_df[TARGET_COL] = supply_df[TARGET_COL].astype(str).str.replace(r'[^\d.]', '', regex=True)
-
-# 지운 결과를 진짜 숫자(float)로 변환하고, 혹시라도 에러로 생긴 빈칸(NaN)은 0으로 채움
 supply_df[TARGET_COL] = pd.to_numeric(supply_df[TARGET_COL], errors='coerce').fillna(0)
 
 merged_df = pd.merge(temp_df, supply_df, on='Date', how='inner')
