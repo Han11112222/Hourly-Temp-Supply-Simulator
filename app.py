@@ -26,7 +26,7 @@ except Exception as e:
     print(f"   -> 구글 시트 로드 실패: {e}")
 
 # ---------------------------------------------------------
-# 2. 기온 파생 변수 (HDD 등) 생성 
+# 2. 기온 파생 변수 (HDD 등) 생성
 # ---------------------------------------------------------
 print("2. 1시간 단위 기온 데이터를 가공 중입니다...")
 hour_cols = [f'Hour{i}' for i in range(1, 25)]
@@ -35,18 +35,20 @@ temp_df['Daily_Mean'] = temp_df[hour_cols].mean(axis=1)
 temp_df['Daily_Max']  = temp_df[hour_cols].max(axis=1)
 temp_df['Daily_Min']  = temp_df[hour_cols].min(axis=1)
 
-# 난방도일(HDD) 계산
 temp_df['HDD'] = temp_df[hour_cols].apply(lambda x: np.maximum(18 - x, 0)).sum(axis=1) / 24
 temp_df['Date'] = pd.to_datetime(temp_df[['Year', 'Month', 'Day']])
 
 # ---------------------------------------------------------
-# 3. 데이터 병합 및 전처리 (★ 콤마 에러 해결 부분 ★)
+# 3. 데이터 병합 및 ★초강력 숫자 정제★
 # ---------------------------------------------------------
-print("3. 기온 데이터와 공급량 데이터를 결합하고 숫자를 정제합니다...")
+print("3. 기온과 공급량을 결합하고 콤마(,)와 공백을 강제 파괴합니다...")
 supply_df['Date'] = pd.to_datetime(supply_df[DATE_COL_IN_SHEET])
 
-# ★ 에러 해결: 공급량합계 데이터의 콤마(,)와 공백을 지우고 숫자(float)로 변환!
-supply_df[TARGET_COL] = supply_df[TARGET_COL].astype(str).str.replace(',', '').str.strip().astype(float)
+# 🚨 에러 원천 차단: 정규표현식을 사용하여 숫자(\d)와 소수점(.) 빼고 싹 다 지워버림!
+supply_df[TARGET_COL] = supply_df[TARGET_COL].astype(str).str.replace(r'[^\d.]', '', regex=True)
+
+# 지운 결과를 진짜 숫자(float)로 변환하고, 혹시라도 에러로 생긴 빈칸(NaN)은 0으로 채움
+supply_df[TARGET_COL] = pd.to_numeric(supply_df[TARGET_COL], errors='coerce').fillna(0)
 
 merged_df = pd.merge(temp_df, supply_df, on='Date', how='inner')
 
@@ -57,7 +59,7 @@ X_train = train_df[features]
 y_train = train_df[TARGET_COL]  
 
 # ---------------------------------------------------------
-# 4. 공급량 예측 모델 학습 
+# 4. 공급량 예측 모델 학습
 # ---------------------------------------------------------
 print("4. 비선형 AI 예측 모델 학습을 시작합니다...")
 model = RandomForestRegressor(n_estimators=100, random_state=42)
