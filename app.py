@@ -1,7 +1,9 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.linear_model import LinearRegression
+from sklearn.pipeline import make_pipeline
 from sklearn.metrics import r2_score
 
 # ---------------------------------------------------------
@@ -10,7 +12,7 @@ from sklearn.metrics import r2_score
 st.set_page_config(page_title="도시가스 공급량 시뮬레이터", layout="wide")
 
 st.title("🔥 대성에너지 월별 공급량 시뮬레이션 및 모델 비교 대시보드")
-st.markdown("특이 연도를 제외한 맞춤형 AI 학습을 진행하고, **정밀 기온(방법1)**과 **단순 평균기온(방법2)**의 예측값을 실제 실적과 비교합니다.")
+st.markdown("특이 연도를 제외한 맞춤형 AI 학습을 진행하고, **정밀 기온(방법1)**과 **단순 평균기온(방법2)**의 예측값을 실제 실적과 비교합니다. (3차 다항식 회귀 모델 적용)")
 
 # ==========================================
 # 1. 데이터 로드 및 전처리 (캐싱 적용)
@@ -56,7 +58,7 @@ all_train_years = sorted(merged_df['Year'].unique())
 default_train_years = [y for y in all_train_years if y >= 2015 and y <= 2023 and y != 2021]
 
 train_years = st.sidebar.multiselect(
-    "1. AI 학습 연도 선택 (특이 연도 제외 가능)",
+    "1. 학습 연도 선택 (특이 연도 제외 가능)",
     options=all_train_years,
     default=default_train_years
 )
@@ -66,7 +68,7 @@ all_sim_years = sorted(temp_df['Year'].unique())
 default_sim_years = [y for y in range(2016, 2027) if y in all_sim_years]
 
 sim_years = st.sidebar.multiselect(
-    "2. 예측에 사용할 기온 시나리오 연도 (평균 산출용)", 
+    "2. 예측 시나리오 연도 (평균 산출용)", 
     options=all_sim_years, 
     default=default_sim_years
 )
@@ -76,43 +78,40 @@ if not train_years or not sim_years:
     st.stop()
 
 # ==========================================
-# 3. 모델 학습
+# 3. 모델 학습 (★ 3차 다항식 회귀 모델로 전면 교체 ★)
 # ==========================================
 train_df = merged_df[merged_df['Year'].isin(train_years)]
 y_train = train_df[TARGET_COL]
 
-# [방법 1] 정밀 기온 Base
+# Pipeline을 사용하여 3차항(degree=3) 생성 후 다중 선형 회귀(LinearRegression) 적용
+# [방법 1] 정밀 기온 Base (HDD 등 4개 변수의 3차 다항식)
 features_m1 = ['Daily_Mean', 'Daily_Max', 'Daily_Min', 'HDD']
-model_m1 = RandomForestRegressor(n_estimators=100, random_state=42)
+model_m1 = make_pipeline(PolynomialFeatures(degree=3, include_bias=False), LinearRegression())
 model_m1.fit(train_df[features_m1], y_train)
 
-# [방법 2] 단순 일평균 기온 Base
+# [방법 2] 단순 일평균 기온 Base (단일 변수의 3차 다항식)
 features_m2 = ['Daily_Mean']
-model_m2 = RandomForestRegressor(n_estimators=100, random_state=42)
+model_m2 = make_pipeline(PolynomialFeatures(degree=3, include_bias=False), LinearRegression())
 model_m2.fit(train_df[features_m2], y_train)
 
 # ==========================================
 # 4. 시나리오 기반 타임라인 매핑 (24~26년)
 # ==========================================
-# 시나리오 연도들의 일별 예측값 평균을 구하여 '표준 1년 프로필' 생성
 sim_df = temp_df[temp_df['Year'].isin(sim_years)].copy()
 sim_df['Pred_M1'] = model_m1.predict(sim_df[features_m1])
 sim_df['Pred_M2'] = model_m2.predict(sim_df[features_m2])
 
 daily_profile = sim_df.groupby(['Month', 'Day'])[['Pred_M1', 'Pred_M2']].mean().reset_index()
 
-# 2024~2026년 타임라인에 표준 프로필 투영
 target_years = [2024, 2025, 2026]
 eval_df = temp_df[temp_df['Year'].isin(target_years)][['Year', 'Month', 'Day', 'Date']].copy()
 
 eval_df = pd.merge(eval_df, daily_profile, on=['Month', 'Day'], how='left')
 
-# 실제 실적값 매핑
 actual_sub = merged_df[merged_df['Year'].isin(target_years)][['Date', TARGET_COL]]
 eval_df = pd.merge(eval_df, actual_sub, on='Date', how='left')
 eval_df[TARGET_COL] = eval_df[TARGET_COL].fillna(0)
 
-# 월별 합산
 eval_df['Year_Month'] = eval_df['Date'].dt.to_period('M').astype(str)
 monthly_df = eval_df.groupby('Year_Month').agg({
     TARGET_COL: 'sum',
@@ -122,7 +121,6 @@ monthly_df = eval_df.groupby('Year_Month').agg({
 
 monthly_df.rename(columns={'Pred_M1': '방법1_예측(정밀)', 'Pred_M2': '방법2_예측(단순)'}, inplace=True)
 
-# 실제값이 있는 달만 추려서 R2 스코어 계산
 valid_actual = monthly_df[monthly_df[TARGET_COL] > 0]
 if len(valid_actual) > 1:
     r2_m1 = r2_score(valid_actual[TARGET_COL], valid_actual['방법1_예측(정밀)'])
@@ -135,19 +133,19 @@ monthly_df = monthly_df.set_index('Year_Month')
 # ==========================================
 # 5. 대시보드 화면 구성 (UI)
 # ==========================================
-st.success("🎯 설정하신 조건에 맞춰 AI 월별 공급량 시뮬레이션이 성공적으로 완료되었습니다!")
+st.success("🎯 3차 다항식 회귀(Cubic Polynomial Regression) 기반 시뮬레이션이 완료되었습니다!")
 
-# R2 지표 (가장 상단)
+# R2 지표
 st.markdown("### 🏆 월별 공급량 예측 정확도 비교 ($R^2$ Score)")
 col_m1, col_m2 = st.columns(2)
 with col_m1:
-    st.metric(label="[방법 1] 정밀 기온 Base (HDD 포함)", value=f"{r2_m1:.4f}", delta="비선형성 타격량 반영")
+    st.metric(label="[방법 1] 정밀 기온 Base (3차 다항식)", value=f"{r2_m1:.4f}", delta="설명 가능한 비선형 모델")
 with col_m2:
     st.metric(label="[방법 2] 단순 일평균 기온 Base", value=f"{r2_m2:.4f}")
 
 st.divider()
 
-# 그래프 (크게 위로 배치)
+# 그래프
 st.subheader("📊 2024년 ~ 2026년 월별 공급량 비교 트렌드")
 chart_cols = ['방법1_예측(정밀)', '방법2_예측(단순)']
 if monthly_df[TARGET_COL].sum() > 0:
@@ -158,7 +156,7 @@ st.line_chart(monthly_df[chart_cols], use_container_width=True)
 
 st.divider()
 
-# 데이터 표 (그래프 하단으로 이동)
+# 데이터 표 (형님 요청대로 아래로 배치)
 st.subheader("🗂️ 월별 데이터 요약 리포트")
 st.dataframe(monthly_df, use_container_width=True)
 
@@ -166,6 +164,6 @@ csv = monthly_df.to_csv(index=True).encode('utf-8-sig')
 st.download_button(
     label="📥 시뮬레이션 결과 다운로드",
     data=csv,
-    file_name="비교_공급량시뮬레이션.csv",
+    file_name="비교_공급량시뮬레이션_다항식.csv",
     mime="text/csv"
 )
