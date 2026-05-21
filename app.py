@@ -1,159 +1,54 @@
-import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.linear_model import LinearRegression
-from sklearn.pipeline import make_pipeline
-from sklearn.metrics import r2_score
+import seaborn as sns
+import matplotlib.pyplot as plt
 
-# ---------------------------------------------------------
-# 스트림릿 웹페이지 기본 설정
-# ---------------------------------------------------------
-st.set_page_config(page_title="도시가스 공급량 시뮬레이터", layout="wide")
+# 1. 폰트 설정 (한글 및 마이너스 기호 깨짐 방지 - 윈도우 환경 맑은 고딕 기준)
+plt.rcParams['font.family'] = 'Malgun Gothic'
+plt.rcParams['axes.unicode_minus'] = False 
 
-st.title("🔥 대성에너지 월별 공급량 시뮬레이션 및 모델 비교 대시보드")
-st.markdown("특이 연도를 제외한 맞춤형 AI 학습을 진행하고, **1시간 단위 합산 HDD(방법1)**과 **단순 평균기온(방법2)**의 예측력을 실제 실적과 정밀 대조합니다.")
+# 2. 데이터 불러오기
+# '합산기온.csv' 파일이 파이썬 스크립트와 같은 폴더에 있어야 합니다.
+# (공공데이터 CSV는 보통 cp949 인코딩이 많아 우선 적용하고, 에러 시 utf-8로 읽도록 예외 처리했습니다)
+print("데이터를 불러오는 중입니다...")
+try:
+    df = pd.read_csv('합산기온.csv', encoding='cp949', parse_dates=['일시'])
+except UnicodeDecodeError:
+    df = pd.read_csv('합산기온.csv', encoding='utf-8', parse_dates=['일시'])
 
-# ==========================================
-# 1. 데이터 로드 및 전처리
-# ==========================================
-@st.cache_data
-def load_and_preprocess_data():
-    try:
-        temp_df = pd.read_csv('합산기온.csv', encoding='utf-8') 
-    except:
-        temp_df = pd.read_csv('합산기온.csv', encoding='cp949') 
+# 3. 데이터 전처리 (월, 시간 추출)
+print("데이터 전처리 중...")
+# 기온 데이터가 있는 컬럼명을 확인하세요. (예: 사진상으로는 '기온' 대신 '2000'이나 별도 명칭일 수 있습니다)
+# 여기서는 원본 CSV의 날짜 컬럼이 '일시', 온도 컬럼이 '기온'이라고 가정합니다.
+# 만약 온도 컬럼 이름이 다르다면 아래 코드의 '기온' 부분을 실제 이름으로 바꿔주세요.
+df['월'] = df['일시'].dt.month
+df['시간'] = df['일시'].dt.hour
 
-    sheet_url = "https://docs.google.com/spreadsheets/d/13HrIz6OytYDykXeXzXJ02I6XbaKin1YaKBoO2kBd6Bs/export?format=csv&gid=0"
-    supply_df = pd.read_csv(sheet_url)
+# 4. 피벗 테이블 생성 (월별, 시간대별 평균 기온 계산)
+# 행(index)은 '월', 열(columns)은 '시간', 값(values)은 '기온'의 평균(mean)
+pivot_df = df.pivot_table(index='월', columns='시간', values='기온', aggfunc='mean')
 
-    col_list = supply_df.columns.tolist()
-    DATE_COL_IN_SHEET = col_list[0]
-    
-    # 구글 시트 기온 및 공급량 컬럼 자동 인식
-    sheet_temp_cols = [c for c in col_list if '기온' in c]
-    SHEET_TEMP_COL = sheet_temp_cols[0] if sheet_temp_cols else col_list[1]
-    
-    target_cols = [c for c in col_list if '공급량' in c or '합계' in c]
-    TARGET_COL = target_cols[0] if target_cols else col_list[-1]
+# 5. 히트맵 시각화
+print("그래프를 그리는 중입니다...")
+plt.figure(figsize=(16, 8))
 
-    # ★ 핵심 로직: 1시간마다 HDD를 개별 계산한 뒤, 모두 합쳐서 하루치 대표 X값(Daily_HDD) 생성
-    hour_cols = [f'Hour{i}' for i in range(1, 25)]
-    temp_df['Daily_HDD'] = temp_df[hour_cols].apply(lambda x: np.maximum(18 - x, 0)).sum(axis=1) / 24
-    temp_df['Date'] = pd.to_datetime(temp_df[['Year', 'Month', 'Day']])
+# seaborn 히트맵 그리기
+# cmap='coolwarm': 추울수록 파란색, 더울수록 빨간색으로 표시 (난방 수요 직관적 확인 가능)
+# annot=True: 칸 안에 실제 평균 온도 숫자 표시
+# fmt=".1f": 숫자를 소수점 첫째 자리까지만 표시
+sns.heatmap(pivot_df, cmap='coolwarm', annot=True, fmt=".1f", linewidths=.5)
 
-    # 결측치 방어
-    temp_df['Daily_HDD'] = temp_df['Daily_HDD'].ffill().bfill()
+# 차트 디자인
+plt.title('월별/시간대별 평균 기온 분포 (난방 수요 피크 타임 분석용)', fontsize=18, pad=20, fontweight='bold')
+plt.xlabel('시간 (Hour)', fontsize=14)
+plt.ylabel('월 (Month)', fontsize=14)
 
-    supply_df['Date'] = pd.to_datetime(supply_df[DATE_COL_IN_SHEET])
-    supply_df[TARGET_COL] = supply_df[TARGET_COL].astype(str).str.replace(r'[^\d.]', '', regex=True)
-    supply_df[TARGET_COL] = pd.to_numeric(supply_df[TARGET_COL], errors='coerce').fillna(0)
+# y축 라벨(월)이 가로로 똑바로 보이도록 설정
+plt.yticks(rotation=0) 
 
-    # 데이터 병합
-    merged_df = pd.merge(temp_df, supply_df, on='Date', how='inner')
-    
-    return merged_df, TARGET_COL, SHEET_TEMP_COL
+# 레이아웃을 깔끔하게 조정 후 출력
+plt.tight_layout()
+plt.show()
 
-with st.spinner("데이터베이스를 불러오는 중입니다..."):
-    merged_df, TARGET_COL, SHEET_TEMP_COL = load_and_preprocess_data()
-
-# ==========================================
-# 2. 좌측 사이드바: 컨트롤 패널
-# ==========================================
-st.sidebar.header("⚙️ 시뮬레이션 설정 패널")
-
-all_train_years = sorted(merged_df['Year'].unique())
-default_train_years = [y for y in all_train_years if y >= 2015 and y <= 2023 and y != 2021]
-
-train_years = st.sidebar.multiselect(
-    "1. AI 학습 연도 선택 (특이 연도 제외 가능)",
-    options=all_train_years,
-    default=default_train_years
-)
-
-if not train_years:
-    st.warning("👈 좌측 패널에서 학습 연도를 선택해 주세요.")
-    st.stop()
-
-# ==========================================
-# 3. 모델 학습 (3차 다항식)
-# ==========================================
-train_df = merged_df[merged_df['Year'].isin(train_years)]
-y_train = train_df[TARGET_COL]
-
-# [방법 1] 정밀 기온 Base: X값으로 'Daily_HDD' 딱 1개만 사용
-model_m1 = make_pipeline(PolynomialFeatures(degree=3, include_bias=False), LinearRegression())
-model_m1.fit(train_df[['Daily_HDD']], y_train)
-
-# [방법 2] 기존 기온 Base: X값으로 구글 시트 원본 '평균기온' 딱 1개만 사용
-model_m2 = make_pipeline(PolynomialFeatures(degree=3, include_bias=False), LinearRegression())
-model_m2.fit(train_df[[SHEET_TEMP_COL]], y_train)
-
-# 모델의 수식(Coefficient) 및 학습 정확도(R2) 추출
-coef_m1 = model_m1.named_steps['linearregression'].coef_
-inter_m1 = model_m1.named_steps['linearregression'].intercept_
-train_r2_m1 = r2_score(y_train, model_m1.predict(train_df[['Daily_HDD']]))
-
-coef_m2 = model_m2.named_steps['linearregression'].coef_
-inter_m2 = model_m2.named_steps['linearregression'].intercept_
-train_r2_m2 = r2_score(y_train, model_m2.predict(train_df[[SHEET_TEMP_COL]]))
-
-# ==========================================
-# 4. 일별 1:1 예측 후 월별 합산
-# ==========================================
-target_years = [2024, 2025, 2026]
-eval_df = merged_df[merged_df['Year'].isin(target_years)].copy()
-
-if len(eval_df) == 0:
-    st.error("데이터에 2024~2026년 실적 및 기온 정보가 매칭되지 않았습니다.")
-    st.stop()
-
-# 각 모델별 '1일 공급량' 예측
-eval_df['방법1_예측(정밀)'] = model_m1.predict(eval_df[['Daily_HDD']])
-eval_df['방법2_예측(단순)'] = model_m2.predict(eval_df[[SHEET_TEMP_COL]])
-
-# 월별로 예측량 합산
-eval_df['Year_Month'] = eval_df['Date'].dt.to_period('M').astype(str)
-monthly_df = eval_df.groupby('Year_Month').agg({
-    TARGET_COL: 'sum',
-    '방법1_예측(정밀)': 'sum',
-    '방법2_예측(단순)': 'sum'
-}).reset_index()
-
-monthly_df.rename(columns={TARGET_COL: '실제_공급량합계'}, inplace=True)
-
-valid_actual = monthly_df[monthly_df['실제_공급량합계'] > 0]
-if len(valid_actual) > 1:
-    r2_m1_monthly = r2_score(valid_actual['실제_공급량합계'], valid_actual['방법1_예측(정밀)'])
-    r2_m2_monthly = r2_score(valid_actual['실제_공급량합계'], valid_actual['방법2_예측(단순)'])
-else:
-    r2_m1_monthly, r2_m2_monthly = 0, 0
-
-monthly_df = monthly_df.set_index('Year_Month')
-
-# ==========================================
-# 5. 대시보드 화면 구성 (UI)
-# ==========================================
-st.success("🎯 1시간 단위 난방도일(HDD) 개별 합산 로직이 완벽하게 이식되었습니다!")
-
-# 수식 공개 및 학습 R2 표시
-col_m1, col_m2 = st.columns(2)
-with col_m1:
-    st.markdown("### 🏆 [방법 1] 정밀 기온 (1시간 단위 HDD 합산)")
-    st.info(f"**도출된 1일 공급량 함수식:**\n\n $y = {coef_m1[2]:.2f}x^3 + {coef_m1[1]:.2f}x^2 + {coef_m1[0]:.2f}x + {inter_m1:.0f}$ \n\n *(x = 1일 누적 HDD, 학습 일치율 R²: {train_r2_m1:.4f})*")
-with col_m2:
-    st.markdown("### 📊 [방법 2] 단순 평균기온 (구글 시트)")
-    st.info(f"**도출된 1일 공급량 함수식:**\n\n $y = {coef_m2[2]:.2f}x^3 + {coef_m2[1]:.2f}x^2 + {coef_m2[0]:.2f}x + {inter_m2:.0f}$ \n\n *(x = 일 평균기온, 학습 일치율 R²: {train_r2_m2:.4f})*")
-
-st.divider()
-
-# 차트
-st.subheader("📈 2024년 ~ 2026년 월별 공급량 비교 트렌드 (실제 실적 스케일)")
-chart_cols = ['실제_공급량합계', '방법1_예측(정밀)', '방법2_예측(단순)']
-st.line_chart(monthly_df[chart_cols], use_container_width=True)
-
-st.divider()
-
-# 표
-st.subheader("🗂️ 월별 데이터 요약 리포트")
-st.dataframe(monthly_df, use_container_width=True)
+# (선택) 마케팅 회의 자료로 바로 쓸 수 있게 이미지 파일로 저장하려면 위 plt.show()를 지우고 아래 코드를 쓰세요.
+# plt.savefig('월별_시간별_기온히트맵.png', dpi=300)
