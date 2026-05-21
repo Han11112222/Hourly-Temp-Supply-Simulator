@@ -108,7 +108,8 @@ train_r2_m2 = r2_score(y_train, model_m2.predict(train_df[[SHEET_TEMP_COL]]))
 # 4. 타임라인 매핑 및 시뮬레이션 예측
 # ==========================================
 target_years = [2024, 2025, 2026]
-eval_df = merged_df[merged_df['Year'].isin(target_years)][['Year', 'Month', 'Day', 'Date', TARGET_COL]].copy()
+# ★ 수정된 부분: 'Daily_HDD'와 SHEET_TEMP_COL 컬럼을 복사할 때 포함시켰습니다.
+eval_df = merged_df[merged_df['Year'].isin(target_years)][['Year', 'Month', 'Day', 'Date', TARGET_COL, 'Daily_HDD', SHEET_TEMP_COL]].copy()
 
 # 시나리오 빈칸 채우기 로직 (2026년 등 데이터가 없는 구간 방어)
 scenario_df = merged_df[merged_df['Year'].isin(sim_years)]
