@@ -37,6 +37,10 @@ def load_and_preprocess_data():
     temp_df['HDD'] = temp_df[hour_cols].apply(lambda x: np.maximum(18 - x, 0)).sum(axis=1) / 24
     temp_df['Date'] = pd.to_datetime(temp_df[['Year', 'Month', 'Day']])
 
+    # ★ 에러 해결 핵심: 기온 데이터 중 빈칸(미래 날짜 등)이 있으면 앞/뒤 날짜 값으로 채워 넣음
+    for col in ['Daily_Mean', 'Daily_Max', 'Daily_Min', 'HDD']:
+        temp_df[col] = temp_df[col].ffill().bfill()
+
     supply_df['Date'] = pd.to_datetime(supply_df[DATE_COL])
     supply_df[TARGET_COL] = supply_df[TARGET_COL].astype(str).str.replace(r'[^\d.]', '', regex=True)
     supply_df[TARGET_COL] = pd.to_numeric(supply_df[TARGET_COL], errors='coerce').fillna(0)
@@ -78,12 +82,11 @@ if not train_years or not sim_years:
     st.stop()
 
 # ==========================================
-# 3. 모델 학습 (★ 3차 다항식 회귀 모델로 전면 교체 ★)
+# 3. 모델 학습 (3차 다항식 회귀 모델)
 # ==========================================
 train_df = merged_df[merged_df['Year'].isin(train_years)]
 y_train = train_df[TARGET_COL]
 
-# Pipeline을 사용하여 3차항(degree=3) 생성 후 다중 선형 회귀(LinearRegression) 적용
 # [방법 1] 정밀 기온 Base (HDD 등 4개 변수의 3차 다항식)
 features_m1 = ['Daily_Mean', 'Daily_Max', 'Daily_Min', 'HDD']
 model_m1 = make_pipeline(PolynomialFeatures(degree=3, include_bias=False), LinearRegression())
@@ -156,7 +159,7 @@ st.line_chart(monthly_df[chart_cols], use_container_width=True)
 
 st.divider()
 
-# 데이터 표 (형님 요청대로 아래로 배치)
+# 데이터 표
 st.subheader("🗂️ 월별 데이터 요약 리포트")
 st.dataframe(monthly_df, use_container_width=True)
 
