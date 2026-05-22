@@ -117,21 +117,23 @@ eval_df['방법1_예측(정밀)'] = model_m1.predict(eval_df[['Daily_HDD']])
 eval_df['방법2_예측(단순)'] = model_m2.predict(eval_df[[SHEET_TEMP_COL]])
 eval_df['Year_Month'] = eval_df['Date'].dt.to_period('M').astype(str)
 
-# 차트 및 표출용 월별 데이터 연산
+# ★ 월별 차이 및 비율(오차율) 연산
 monthly_eval = eval_df.groupby('Year_Month').agg({
     TARGET_COL: 'sum', '방법1_예측(정밀)': 'sum', '방법2_예측(단순)': 'sum'
 }).reset_index().rename(columns={TARGET_COL: '실제_공급량합계'})
 monthly_eval['방법1_차이'] = monthly_eval['방법1_예측(정밀)'] - monthly_eval['실제_공급량합계']
+monthly_eval['방법1_오차율(%)'] = (monthly_eval['방법1_차이'] / monthly_eval['실제_공급량합계']) * 100
 monthly_eval['방법2_차이'] = monthly_eval['방법2_예측(단순)'] - monthly_eval['실제_공급량합계']
-monthly_eval = monthly_eval.set_index('Year_Month')
+monthly_eval['방법2_오차율(%)'] = (monthly_eval['방법2_차이'] / monthly_eval['실제_공급량합계']) * 100
 
-# 표출용 연도별 데이터 연산
+# ★ 연도별 차이 및 비율(오차율) 연산
 yearly_eval = eval_df.groupby('Year').agg({
     TARGET_COL: 'sum', '방법1_예측(정밀)': 'sum', '방법2_예측(단순)': 'sum'
 }).reset_index().rename(columns={TARGET_COL: '실제_공급량합계'})
 yearly_eval['방법1_차이'] = yearly_eval['방법1_예측(정밀)'] - yearly_eval['실제_공급량합계']
+yearly_eval['방법1_오차율(%)'] = (yearly_eval['방법1_차이'] / yearly_eval['실제_공급량합계']) * 100
 yearly_eval['방법2_차이'] = yearly_eval['방법2_예측(단순)'] - yearly_eval['실제_공급량합계']
-yearly_eval = yearly_eval[['Year', '실제_공급량합계', '방법1_예측(정밀)', '방법1_차이', '방법2_예측(단순)', '방법2_차이']].set_index('Year')
+yearly_eval['방법2_오차율(%)'] = (yearly_eval['방법2_차이'] / yearly_eval['실제_공급량합계']) * 100
 
 # --- 데이터셋 2: 미래 추정용 연산 ---
 date_list = []
@@ -162,7 +164,6 @@ monthly_future = future_df.groupby('Year_Month').agg({
     '방법1_예측(정밀)': 'sum', '방법2_예측(단순)': 'sum'
 }).reset_index().set_index('Year_Month')
 
-# 연도별 합산 요약 데이터 생성 (미래 추정용)
 yearly_future = future_df.groupby('Year').agg({
     '방법1_예측(정밀)': 'sum', '방법2_예측(단순)': 'sum'
 }).reset_index().set_index('Year')
@@ -209,19 +210,32 @@ with col_m2:
     * 추위가 극심해질 때 수요가 기하급수적으로 늘어나는 민감도 포착
     """)
 
+# 차트를 위해 임시로 Year_Month 인덱스 세팅
 chart_cols_eval = ['실제_공급량합계', '방법1_예측(정밀)', '방법2_예측(단순)']
-st.line_chart(monthly_eval[chart_cols_eval], use_container_width=True, height=550)
+st.line_chart(monthly_eval.set_index('Year_Month')[chart_cols_eval], use_container_width=True, height=550)
 
-# ★ 월별 표 (이전 박스 복구)
+# ★ 출력 데이터 포맷 공통 지정 (비율은 % 추가)
+format_dict_eval = {
+    '실제_공급량합계': "{:,.0f}",
+    '방법1_예측(정밀)': "{:,.0f}",
+    '방법1_차이': "{:,.0f}",
+    '방법1_오차율(%)': "{:.1f}%",
+    '방법2_예측(단순)': "{:,.0f}",
+    '방법2_차이': "{:,.0f}",
+    '방법2_오차율(%)': "{:.1f}%"
+}
+
+# ★ 월별 표 출력 (순서 조정 및 hide_index=True로 잘림 방지)
 st.subheader("🗂️ 월별 적합도 상세 리포트 (예측 차이 비교)")
-display_eval_df = monthly_eval[['실제_공급량합계', '방법1_예측(정밀)', '방법1_차이', '방법2_예측(단순)', '방법2_차이']]
-st.dataframe(display_eval_df.style.format("{:,.0f}"), use_container_width=True)
+display_eval_df = monthly_eval[['Year_Month', '실제_공급량합계', '방법1_예측(정밀)', '방법1_차이', '방법1_오차율(%)', '방법2_예측(단순)', '방법2_차이', '방법2_오차율(%)']]
+st.dataframe(display_eval_df.style.format(format_dict_eval), use_container_width=True, hide_index=True)
 
-# ★ 연도별 표 (월별 표 바로 아래에 새롭게 추가)
+# ★ 연도별 표 출력 (순서 조정 및 hide_index=True로 잘림 방지)
 st.subheader("📆 연도별 적합도 요약 리포트 (예측 차이 비교)")
-st.dataframe(yearly_eval.style.format("{:,.0f}"), use_container_width=True)
+display_yearly_eval = yearly_eval[['Year', '실제_공급량합계', '방법1_예측(정밀)', '방법1_차이', '방법1_오차율(%)', '방법2_예측(단순)', '방법2_차이', '방법2_오차율(%)']]
+st.dataframe(display_yearly_eval.style.format(format_dict_eval), use_container_width=True, hide_index=True)
 
-csv_eval = display_eval_df.to_csv(index=True).encode('utf-8-sig')
+csv_eval = display_eval_df.to_csv(index=False).encode('utf-8-sig')
 st.download_button("📥 과거 적합도 검증 월별 리포트 다운로드", data=csv_eval, file_name="과거적합도_월별_검증리포트.csv", mime="text/csv")
 
 
