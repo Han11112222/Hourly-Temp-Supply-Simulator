@@ -200,12 +200,17 @@ with col_m2:
     * 추위가 극심해질 때 수요가 기하급수적으로 늘어나는 민감도 포착
     """)
 
-# ★ 파트 1 그래프 높이 확대 (height=550 파라미터 추가)
+# 파트 1 그래프 높이 확대 (height=550 파라미터 유지)
 chart_cols_eval = ['실제_공급량합계', '방법1_예측(정밀)', '방법2_예측(단순)']
 st.line_chart(monthly_eval[chart_cols_eval], use_container_width=True, height=550)
-st.dataframe(monthly_eval.style.format("{:,.0f}"), use_container_width=True)
 
-csv_eval = monthly_eval.to_csv(index=True).encode('utf-8-sig')
+# ★ 수정/추가된 부분: 파트 1 그래프 하단에 월별 차이(오차) 비교 박스 명시적 추가
+st.subheader("🗂️ 월별 적합도 상세 리포트 (예측 차이 비교)")
+# 비교가 쉽도록 컬럼 순서를 [실제, 방법1예측, 방법1차이, 방법2예측, 방법2차이] 로 재배열
+display_eval_df = monthly_eval[['실제_공급량합계', '방법1_예측(정밀)', '방법1_차이', '방법2_예측(단순)', '방법2_차이']]
+st.dataframe(display_eval_df.style.format("{:,.0f}"), use_container_width=True)
+
+csv_eval = display_eval_df.to_csv(index=True).encode('utf-8-sig')
 st.download_button("📥 과거 적합도 검증 리포트 다운로드", data=csv_eval, file_name="과거적합도_검증리포트.csv", mime="text/csv")
 
 
@@ -228,7 +233,7 @@ st.warning(f"""
 * **방법 2 (단순):** 최근 {y_years}년 동안의 동일 날짜 **일평균 기온들의 단순 평균값**을 미래 일자별 기온으로 대입.
 """)
 
-# ★ 파트 2 그래프 높이 확대 (height=550 파라미터 추가)
+# 파트 2 그래프 높이 확대 (height=550 파라미터 유지)
 chart_cols_future = ['방법1_예측(정밀)', '방법2_예측(단순)']
 st.line_chart(monthly_future[chart_cols_future], use_container_width=True, height=550)
 st.subheader("🗂️ 월별 데이터 요약 리포트")
