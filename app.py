@@ -117,12 +117,19 @@ eval_df['방법1_예측(정밀)'] = model_m1.predict(eval_df[['Daily_HDD']])
 eval_df['방법2_예측(단순)'] = model_m2.predict(eval_df[[SHEET_TEMP_COL]])
 eval_df['Year_Month'] = eval_df['Date'].dt.to_period('M').astype(str)
 
+# 차트용 월별 데이터
 monthly_eval = eval_df.groupby('Year_Month').agg({
     TARGET_COL: 'sum', '방법1_예측(정밀)': 'sum', '방법2_예측(단순)': 'sum'
 }).reset_index().rename(columns={TARGET_COL: '실제_공급량합계'})
-monthly_eval['방법1_차이'] = monthly_eval['방법1_예측(정밀)'] - monthly_eval['실제_공급량합계']
-monthly_eval['방법2_차이'] = monthly_eval['방법2_예측(단순)'] - monthly_eval['실제_공급량합계']
 monthly_eval = monthly_eval.set_index('Year_Month')
+
+# ★ 수정된 부분: 파트 1 하단에 표출할 과거 검증용 '연도별' 합산 연산
+yearly_eval = eval_df.groupby('Year').agg({
+    TARGET_COL: 'sum', '방법1_예측(정밀)': 'sum', '방법2_예측(단순)': 'sum'
+}).reset_index().rename(columns={TARGET_COL: '실제_공급량합계'})
+yearly_eval['방법1_차이'] = yearly_eval['방법1_예측(정밀)'] - yearly_eval['실제_공급량합계']
+yearly_eval['방법2_차이'] = yearly_eval['방법2_예측(단순)'] - yearly_eval['실제_공급량합계']
+yearly_eval = yearly_eval[['Year', '실제_공급량합계', '방법1_예측(정밀)', '방법1_차이', '방법2_예측(단순)', '방법2_차이']].set_index('Year')
 
 # --- 데이터셋 2: 미래 추정용 연산 ---
 date_list = []
@@ -204,14 +211,12 @@ with col_m2:
 chart_cols_eval = ['실제_공급량합계', '방법1_예측(정밀)', '방법2_예측(단순)']
 st.line_chart(monthly_eval[chart_cols_eval], use_container_width=True, height=550)
 
-# ★ 수정/추가된 부분: 파트 1 그래프 하단에 월별 차이(오차) 비교 박스 명시적 추가
-st.subheader("🗂️ 월별 적합도 상세 리포트 (예측 차이 비교)")
-# 비교가 쉽도록 컬럼 순서를 [실제, 방법1예측, 방법1차이, 방법2예측, 방법2차이] 로 재배열
-display_eval_df = monthly_eval[['실제_공급량합계', '방법1_예측(정밀)', '방법1_차이', '방법2_예측(단순)', '방법2_차이']]
-st.dataframe(display_eval_df.style.format("{:,.0f}"), use_container_width=True)
+# ★ 수정된 부분: 월별 표를 제거하고 '연도별' 적합도 요약 리포트 박스로 교체
+st.subheader("📆 연도별 적합도 요약 리포트 (예측 차이 비교)")
+st.dataframe(yearly_eval.style.format("{:,.0f}"), use_container_width=True)
 
-csv_eval = display_eval_df.to_csv(index=True).encode('utf-8-sig')
-st.download_button("📥 과거 적합도 검증 리포트 다운로드", data=csv_eval, file_name="과거적합도_검증리포트.csv", mime="text/csv")
+csv_eval = yearly_eval.to_csv(index=True).encode('utf-8-sig')
+st.download_button("📥 과거 적합도 검증 연도별 리포트 다운로드", data=csv_eval, file_name="과거적합도_연도별_요약리포트.csv", mime="text/csv")
 
 
 st.markdown("<br><br>", unsafe_allow_html=True)
