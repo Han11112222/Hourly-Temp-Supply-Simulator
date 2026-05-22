@@ -37,7 +37,7 @@ def load_and_preprocess_data():
     target_cols = [c for c in col_list if '공급량' in c or '합계' in c]
     TARGET_COL = target_cols[0] if target_cols else col_list[-1]
 
-    # ★ 방법 1: 1시간 단위 데이터를 활용한 일일 누적 난방도일(HDD) 산출
+    # 1시간 단위 데이터를 활용한 일일 누적 난방도일(HDD) 산출
     hour_cols = [f'Hour{i}' for i in range(1, 25)]
     temp_df['Daily_HDD'] = temp_df[hour_cols].apply(lambda x: np.maximum(18 - x, 0)).sum(axis=1) / 24
     temp_df['Date'] = pd.to_datetime(temp_df[['Year', 'Month', 'Day']])
@@ -77,21 +77,28 @@ sim_years = st.sidebar.multiselect(
     default=default_sim_years
 )
 
-if not train_years or not sim_years:
+# ★ 추가된 부분: 출력 대상 연도를 사이드바에서 유연하게 선택 가능하게 변경
+target_years = st.sidebar.multiselect(
+    "3. 그래프 및 리포트 출력 대상 연도", 
+    options=[2023, 2024, 2025, 2026, 2027], 
+    default=[2024, 2025]  # 기본값을 2024, 2025년으로 설정
+)
+
+if not train_years or not sim_years or not target_years:
     st.warning("👈 좌측 패널에서 연도 설정을 완료해 주세요.")
     st.stop()
 
 # ==========================================
-# 3. 모델 학습 (★ 완벽한 역할 분리 ★)
+# 3. 모델 학습 
 # ==========================================
 train_df = merged_df[merged_df['Year'].isin(train_years)].dropna(subset=['Daily_HDD', SHEET_TEMP_COL])
 y_train = train_df[TARGET_COL]
 
-# [방법 1] 정밀 기온 Base: 이미 비선형성이 반영된 HDD는 1차 선형 회귀로 직행
+# [방법 1] 정밀 기온 Base
 model_m1 = make_pipeline(LinearRegression())
 model_m1.fit(train_df[['Daily_HDD']], y_train)
 
-# [방법 2] 기존 기온 Base: 날것의 평균기온은 3차 다항식 곡선 적용
+# [방법 2] 기존 기온 Base
 model_m2 = make_pipeline(PolynomialFeatures(degree=3, include_bias=False), LinearRegression())
 model_m2.fit(train_df[[SHEET_TEMP_COL]], y_train)
 
@@ -107,11 +114,10 @@ train_r2_m2 = r2_score(y_train, model_m2.predict(train_df[[SHEET_TEMP_COL]]))
 # ==========================================
 # 4. 타임라인 매핑 및 시뮬레이션 예측
 # ==========================================
-target_years = [2024, 2025, 2026]
-# ★ 수정된 부분: 'Daily_HDD'와 SHEET_TEMP_COL 컬럼을 복사할 때 포함시켰습니다.
+# 선택된 target_years를 기반으로 타임라인 매핑
 eval_df = merged_df[merged_df['Year'].isin(target_years)][['Year', 'Month', 'Day', 'Date', TARGET_COL, 'Daily_HDD', SHEET_TEMP_COL]].copy()
 
-# 시나리오 빈칸 채우기 로직 (2026년 등 데이터가 없는 구간 방어)
+# 시나리오 빈칸 채우기 로직
 scenario_df = merged_df[merged_df['Year'].isin(sim_years)]
 sim_profile = scenario_df.groupby(['Month', 'Day'])[['Daily_HDD', SHEET_TEMP_COL]].mean().reset_index()
 
@@ -133,12 +139,12 @@ monthly_df = eval_df.groupby('Year_Month').agg({
 
 monthly_df.rename(columns={TARGET_COL: '실제_공급량합계'}, inplace=True)
 
-valid_actual = monthly_df[monthly_df['실제_공급량합계'] > 0]
-if len(valid_actual) > 1:
-    r2_m1_monthly = r2_score(valid_actual['실제_공급량합계'], valid_actual['방법1_예측(정밀)'])
-    r2_m2_monthly = r2_score(valid_actual['실제_공급량합계'], valid_actual['방법2_예측(단순)'])
-else:
-    r2_m1_monthly, r2_m2_monthly = 0, 0
+# ★ 추가된 부분: 예측값과 실제값의 차이 계산 (오차)
+monthly_df['방법1_차이'] = monthly_df['방법1_예측(정밀)'] - monthly_df['실제_공급량합계']
+monthly_df['방법2_차이'] = monthly_df['방법2_예측(단순)'] - monthly_df['실제_공급량합계']
+
+# ★ 추가된 부분: 보기 편하도록 데이터프레임 컬럼 순서 재배치
+monthly_df = monthly_df[['Year_Month', '실제_공급량합계', '방법1_예측(정밀)', '방법1_차이', '방법2_예측(단순)', '방법2_차이']]
 
 monthly_df = monthly_df.set_index('Year_Month')
 
@@ -157,14 +163,17 @@ with col_m2:
 
 st.divider()
 
-st.subheader("📈 2024년 ~ 2026년 월별 공급량 비교 트렌드 (실제 실적 스케일)")
+# 제목에 선택된 연도가 다이나믹하게 반영되도록 수정
+st.subheader(f"📈 {min(target_years)}년 ~ {max(target_years)}년 월별 공급량 비교 트렌드 (실제 실적 스케일)")
+# 그래프에는 '차이' 컬럼이 들어가면 스케일이 엉키므로 기존 예측 컬럼만 사용
 chart_cols = ['실제_공급량합계', '방법1_예측(정밀)', '방법2_예측(단순)']
 st.line_chart(monthly_df[chart_cols], use_container_width=True)
 
 st.divider()
 
 st.subheader("🗂️ 월별 데이터 요약 리포트")
-st.dataframe(monthly_df, use_container_width=True)
+# ★ 추가된 부분: 천 단위 콤마(,) 표시 및 소수점 제거 포맷 적용
+st.dataframe(monthly_df.style.format("{:,.0f}"), use_container_width=True)
 
 csv = monthly_df.to_csv(index=True).encode('utf-8-sig')
 st.download_button(
