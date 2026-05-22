@@ -90,7 +90,7 @@ if not train_years or not eval_years or not future_years:
     st.stop()
 
 # ==========================================
-# 3. 모델 학습 및 최상단 R2 지표 표시
+# 3. 모델 학습 및 데이터 연산 파이프라인
 # ==========================================
 train_df = merged_df[merged_df['Year'].isin(train_years)].dropna(subset=['Daily_HDD', SHEET_TEMP_COL])
 y_train = train_df[TARGET_COL]
@@ -102,7 +102,7 @@ model_m1.fit(train_df[['Daily_HDD']], y_train)
 model_m2 = make_pipeline(PolynomialFeatures(degree=3, include_bias=False), LinearRegression())
 model_m2.fit(train_df[[SHEET_TEMP_COL]], y_train)
 
-# 수식 및 R2 스코어 추출
+# R2 및 계수 추출
 coef_m1 = model_m1.named_steps['linearregression'].coef_
 inter_m1 = model_m1.named_steps['linearregression'].intercept_
 train_r2_m1 = r2_score(y_train, model_m1.predict(train_df[['Daily_HDD']]))
@@ -111,19 +111,7 @@ coef_m2 = model_m2.named_steps['linearregression'].coef_
 inter_m2 = model_m2.named_steps['linearregression'].intercept_
 train_r2_m2 = r2_score(y_train, model_m2.predict(train_df[[SHEET_TEMP_COL]]))
 
-st.divider()
-
-# ★ 최상단 R2 KPI 대시보드
-col_kpi1, col_kpi2 = st.columns(2)
-col_kpi1.metric(label="🏆 [방법 1] 정밀 기온 (1차 선형) 학습 일치율 (R²)", value=f"{train_r2_m1 * 100:.2f} %")
-col_kpi2.metric(label="📊 [방법 2] 단순 평균 (3차 다항) 학습 일치율 (R²)", value=f"{train_r2_m2 * 100:.2f} %")
-
-st.divider()
-
-# ==========================================
-# 4. 데이터 셋업 (과거 검증용 / 미래 추정용 분리)
-# ==========================================
-# [데이터셋 1] 과거 검증용 (eval_years)
+# --- 데이터셋 1: 과거 검증용 연산 ---
 eval_df = merged_df[merged_df['Year'].isin(eval_years)].copy()
 eval_df['방법1_예측(정밀)'] = model_m1.predict(eval_df[['Daily_HDD']])
 eval_df['방법2_예측(단순)'] = model_m2.predict(eval_df[[SHEET_TEMP_COL]])
@@ -136,7 +124,7 @@ monthly_eval['방법1_차이'] = monthly_eval['방법1_예측(정밀)'] - monthl
 monthly_eval['방법2_차이'] = monthly_eval['방법2_예측(단순)'] - monthly_eval['실제_공급량합계']
 monthly_eval = monthly_eval.set_index('Year_Month')
 
-# [데이터셋 2] 미래 추정용 (future_years)
+# --- 데이터셋 2: 미래 추정용 연산 ---
 date_list = []
 for y in future_years:
     dates = pd.date_range(start=f'{y}-01-01', end=f'{y}-12-31')
@@ -144,7 +132,6 @@ for y in future_years:
     date_list.append(temp_target_df)
 future_base_df = pd.concat(date_list, ignore_index=True)
 
-# 미래 시나리오 기온 생성 (최근 Y년 기반)
 scenario_temp_df = temp_df[temp_df['Year'].isin(sim_base_years)]
 scenario_merged_df = merged_df[merged_df['Year'].isin(sim_base_years)]
 
@@ -166,31 +153,77 @@ monthly_future = future_df.groupby('Year_Month').agg({
     '방법1_예측(정밀)': 'sum', '방법2_예측(단순)': 'sum'
 }).reset_index().set_index('Year_Month')
 
-# ==========================================
-# 5. 탭(Tab) 기반 화면 구성
-# ==========================================
-tab1, tab2 = st.tabs(["📊 [Part 1] 과거 모델 적합도 검증", "🔮 [Part 2] 미래 공급량 추정 시나리오"])
 
-with tab1:
-    st.subheader(f"🔍 {min(eval_years)}년 ~ {max(eval_years)}년 실제 실적 vs 모델 예측 비교")
-    st.markdown(f"**[도출된 함수식]**\n* **방법 1 (정밀):** $y = {coef_m1[0]:.2f}x + {inter_m1:.0f}$\n* **방법 2 (단순):** $y = {coef_m2[2]:.2f}x^3 + {coef_m2[1]:.2f}x^2 + {coef_m2[0]:.2f}x + {inter_m2:.0f}$")
-    
-    chart_cols_eval = ['실제_공급량합계', '방법1_예측(정밀)', '방법2_예측(단순)']
-    st.line_chart(monthly_eval[chart_cols_eval], use_container_width=True)
-    
-    st.dataframe(monthly_eval.style.format("{:,.0f}"), use_container_width=True)
-    
-    csv_eval = monthly_eval.to_csv(index=True).encode('utf-8-sig')
-    st.download_button("📥 적합도 리포트 다운로드", data=csv_eval, file_name="과거적합도_검증리포트.csv", mime="text/csv")
+# ==========================================
+# 4. 메인 대시보드 화면 구성 (수직 스크롤 구조)
+# ==========================================
 
-with tab2:
-    st.subheader(f"🚀 {min(future_years)}년 ~ {max(future_years)}년 시나리오 예측 트렌드")
-    st.info(f"💡 **시나리오 기준:** 최근 {y_years}년({min(sim_base_years)}~{max(sim_base_years)})의 시간대별 평균 및 일평균 기온 패턴을 미래 달력에 매핑하여 산출했습니다.")
+st.divider()
+
+# ------------------------------------------
+# 파트 1. 과거 모델 적합도 검증 (상단)
+# ------------------------------------------
+st.header("📊 [Part 1] 과거 모델 적합도 검증")
+st.markdown(f"선택된 검증 연도({min(eval_years)}년~{max(eval_years)}년)의 실제 실적 데이터와 AI 모델들의 예측치를 정밀 대조합니다.")
+
+# ★ 요청사항 반영: 하이라이트 배경 안에 R2, 함수식, 간략 설명 집약
+col_m1, col_m2 = st.columns(2)
+with col_m1:
+    st.markdown("### 🏆 [방법 1] 정밀 기온 (1차 선형 모델)")
+    st.info(f"""
+    **🎯 모델 학습 일치율 (R²): {train_r2_m1 * 100:.2f}%**
     
-    chart_cols_future = ['방법1_예측(정밀)', '방법2_예측(단순)']
-    st.line_chart(monthly_future[chart_cols_future], use_container_width=True)
+    ** 도출된 1일 공급량 함수식:**
+    $$y = {coef_m1[0]:.2f}x + {inter_m1:.0f}$$
+    *(x = 1일 누적 난방도일(HDD))*
     
-    st.dataframe(monthly_future.style.format("{:,.0f}"), use_container_width=True)
+    💡 **해석:** 1시간 단위 온도를 기반으로 계산된 HDD는 기온과 공급량 사이의 비선형적(가속도 법칙) 특성을 이미 내포하고 있어, 안정적인 1차 선형 모델만으로도 매우 높은 예측력을 보여줍니다.
+    """)
+
+with col_m2:
+    st.markdown("### 📊 [방법 2] 단순 평균기온 (3차 다항식)")
+    st.info(f"""
+    **🎯 모델 학습 일치율 (R²): {train_r2_m2 * 100:.2f}%**
     
-    csv_future = monthly_future.to_csv(index=True).encode('utf-8-sig')
-    st.download_button("📥 미래 시나리오 리포트 다운로드", data=csv_future, file_name="미래시나리오_추정리포트.csv", mime="text/csv")
+    ** 도출된 1일 공급량 함수식:**
+    $$y = {coef_m2[2]:.2f}x^3 + {coef_m2[1]:.2f}x^2 + {coef_m2[0]:.2f}x + {inter_m2:.0f}$$
+    *(x = 구글시트 일 평균기온)*
+    
+    💡 **해석:** 가공되지 않은 일 평균기온은 동절기 급증하는 공급량 특성을 선형으로 맞추기 어렵기 때문에, 3차 곡선 함수를 적용하여 추위가 심해질 때의 민감도를 포착하도록 설계되었습니다.
+    """)
+
+# 파트 1 그래프 및 데이터 리포트
+chart_cols_eval = ['실제_공급량합계', '방법1_예측(정밀)', '방법2_예측(단순)']
+st.line_chart(monthly_eval[chart_cols_eval], use_container_width=True)
+st.dataframe(monthly_eval.style.format("{:,.0f}"), use_container_width=True)
+
+csv_eval = monthly_eval.to_csv(index=True).encode('utf-8-sig')
+st.download_button("📥 과거 적합도 검증 리포트 다운로드", data=csv_eval, file_name="과거적합도_검증리포트.csv", mime="text/csv")
+
+
+st.markdown("<br><br>", unsafe_allow_html=True)
+st.divider()
+st.markdown("<br>", unsafe_allow_html=True)
+
+
+# ------------------------------------------
+# 파트 2. 미래 공급량 추정 시나리오 (하단)
+# ------------------------------------------
+st.header("🔮 [Part 2] 미래 공급량 추정 시나리오")
+st.markdown(f"검증된 모델을 기반으로 아직 실적이 없는 미래 연도({min(future_years)}년~{max(future_years)}년)의 공급량을 시뮬레이션합니다.")
+
+# 미래 시나리오 조건 하이라이트 박스
+st.warning(f"""
+💡 **미래 기온 추정 시나리오 설정 완료**
+* **기온 산출 기준:** 과거 최근 **{y_years}개 연도** ({min(sim_base_years)}년 ~ {max(sim_base_years)}년)의 기후 패턴을 반영
+* **방법 1 (정밀):** 최근 {y_years}년 동안의 동일 날짜, **시간대별 각각의 평균 기온**을 먼저 구한 후 미래 일자별 모의 HDD를 재계산하여 대입.
+* **방법 2 (단순):** 최근 {y_years}년 동안의 동일 날짜 **일평균 기온들의 단순 평균값**을 미래 일자별 기온으로 대입.
+""")
+
+# 파트 2 그래프 및 데이터 리포트
+chart_cols_future = ['방법1_예측(정밀)', '방법2_예측(단순)']
+st.line_chart(monthly_future[chart_cols_future], use_container_width=True)
+st.dataframe(monthly_future.style.format("{:,.0f}"), use_container_width=True)
+
+csv_future = monthly_future.to_csv(index=True).encode('utf-8-sig')
+st.download_button("📥 미래 시나리오 추정 리포트 다운로드", data=csv_future, file_name="미래시나리오_추정리포트.csv", mime="text/csv")
