@@ -117,13 +117,15 @@ eval_df['방법1_예측(정밀)'] = model_m1.predict(eval_df[['Daily_HDD']])
 eval_df['방법2_예측(단순)'] = model_m2.predict(eval_df[[SHEET_TEMP_COL]])
 eval_df['Year_Month'] = eval_df['Date'].dt.to_period('M').astype(str)
 
-# 차트용 월별 데이터
+# 차트 및 표출용 월별 데이터 연산
 monthly_eval = eval_df.groupby('Year_Month').agg({
     TARGET_COL: 'sum', '방법1_예측(정밀)': 'sum', '방법2_예측(단순)': 'sum'
 }).reset_index().rename(columns={TARGET_COL: '실제_공급량합계'})
+monthly_eval['방법1_차이'] = monthly_eval['방법1_예측(정밀)'] - monthly_eval['실제_공급량합계']
+monthly_eval['방법2_차이'] = monthly_eval['방법2_예측(단순)'] - monthly_eval['실제_공급량합계']
 monthly_eval = monthly_eval.set_index('Year_Month')
 
-# ★ 수정된 부분: 파트 1 하단에 표출할 과거 검증용 '연도별' 합산 연산
+# 표출용 연도별 데이터 연산
 yearly_eval = eval_df.groupby('Year').agg({
     TARGET_COL: 'sum', '방법1_예측(정밀)': 'sum', '방법2_예측(단순)': 'sum'
 }).reset_index().rename(columns={TARGET_COL: '실제_공급량합계'})
@@ -207,16 +209,20 @@ with col_m2:
     * 추위가 극심해질 때 수요가 기하급수적으로 늘어나는 민감도 포착
     """)
 
-# 파트 1 그래프 높이 확대 (height=550 파라미터 유지)
 chart_cols_eval = ['실제_공급량합계', '방법1_예측(정밀)', '방법2_예측(단순)']
 st.line_chart(monthly_eval[chart_cols_eval], use_container_width=True, height=550)
 
-# ★ 수정된 부분: 월별 표를 제거하고 '연도별' 적합도 요약 리포트 박스로 교체
+# ★ 월별 표 (이전 박스 복구)
+st.subheader("🗂️ 월별 적합도 상세 리포트 (예측 차이 비교)")
+display_eval_df = monthly_eval[['실제_공급량합계', '방법1_예측(정밀)', '방법1_차이', '방법2_예측(단순)', '방법2_차이']]
+st.dataframe(display_eval_df.style.format("{:,.0f}"), use_container_width=True)
+
+# ★ 연도별 표 (월별 표 바로 아래에 새롭게 추가)
 st.subheader("📆 연도별 적합도 요약 리포트 (예측 차이 비교)")
 st.dataframe(yearly_eval.style.format("{:,.0f}"), use_container_width=True)
 
-csv_eval = yearly_eval.to_csv(index=True).encode('utf-8-sig')
-st.download_button("📥 과거 적합도 검증 연도별 리포트 다운로드", data=csv_eval, file_name="과거적합도_연도별_요약리포트.csv", mime="text/csv")
+csv_eval = display_eval_df.to_csv(index=True).encode('utf-8-sig')
+st.download_button("📥 과거 적합도 검증 월별 리포트 다운로드", data=csv_eval, file_name="과거적합도_월별_검증리포트.csv", mime="text/csv")
 
 
 st.markdown("<br><br>", unsafe_allow_html=True)
@@ -230,7 +236,6 @@ st.markdown("<br>", unsafe_allow_html=True)
 st.header("🔮 [Part 2] 미래 공급량 추정 시나리오")
 st.markdown(f"검증된 모델을 기반으로 아직 실적이 없는 미래 연도({min(future_years)}년~{max(future_years)}년)의 공급량을 시뮬레이션합니다.")
 
-# 미래 시나리오 조건 하이라이트 박스
 st.warning(f"""
 💡 **미래 기온 추정 시나리오 설정 완료**
 * **기온 산출 기준:** 과거 최근 **{y_years}개 연도** ({min(sim_base_years)}년 ~ {max(sim_base_years)}년)의 기후 패턴을 반영
@@ -238,13 +243,12 @@ st.warning(f"""
 * **방법 2 (단순):** 최근 {y_years}년 동안의 동일 날짜 **일평균 기온들의 단순 평균값**을 미래 일자별 기온으로 대입.
 """)
 
-# 파트 2 그래프 높이 확대 (height=550 파라미터 유지)
 chart_cols_future = ['방법1_예측(정밀)', '방법2_예측(단순)']
 st.line_chart(monthly_future[chart_cols_future], use_container_width=True, height=550)
+
 st.subheader("🗂️ 월별 데이터 요약 리포트")
 st.dataframe(monthly_future.style.format("{:,.0f}"), use_container_width=True)
 
-# 파트 2 연도별 합산 요약표
 st.subheader("📆 연도별 시나리오 합산 요약")
 st.dataframe(yearly_future.style.format("{:,.0f}"), use_container_width=True)
 
