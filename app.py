@@ -11,7 +11,6 @@ from sklearn.metrics import r2_score
 # ---------------------------------------------------------
 st.set_page_config(page_title="도시가스 공급량 시뮬레이터", layout="wide")
 
-# ★ 제목 수정: 세련된 네이밍 적용
 st.title("🔥 DSE 공급량 예측 모델 _ 정밀기온 활용 ver")
 st.markdown("과거 기상 및 공급량 데이터를 기반으로 AI 모델의 **적합도(R²)**를 검증하고, 이를 바탕으로 **미래의 공급량 시나리오**를 추정합니다.")
 
@@ -154,7 +153,7 @@ monthly_future = future_df.groupby('Year_Month').agg({
     '방법1_예측(정밀)': 'sum', '방법2_예측(단순)': 'sum'
 }).reset_index().set_index('Year_Month')
 
-# ★ 연도별 합산 요약 데이터 생성 (미래 추정용)
+# 연도별 합산 요약 데이터 생성 (미래 추정용)
 yearly_future = future_df.groupby('Year').agg({
     '방법1_예측(정밀)': 'sum', '방법2_예측(단순)': 'sum'
 }).reset_index().set_index('Year')
@@ -175,7 +174,6 @@ st.markdown(f"선택된 검증 연도({min(eval_years)}년~{max(eval_years)}년)
 col_m1, col_m2 = st.columns(2)
 with col_m1:
     st.markdown("### 🏆 [방법 1] 정밀 기온 (1차 선형 모델)")
-    # ★ 해석 부분: 여러 줄로 짧게 끊어서 표현
     st.info(f"""
     **🎯 모델 학습 일치율 (R²): {train_r2_m1 * 100:.2f}%**
     
@@ -190,7 +188,6 @@ with col_m1:
 
 with col_m2:
     st.markdown("### 📊 [방법 2] 단순 평균기온 (3차 다항식)")
-    # ★ 해석 부분: 여러 줄로 짧게 끊어서 표현
     st.info(f"""
     **🎯 모델 학습 일치율 (R²): {train_r2_m2 * 100:.2f}%**
     
@@ -203,9 +200,9 @@ with col_m2:
     * 추위가 극심해질 때 수요가 기하급수적으로 늘어나는 민감도 포착
     """)
 
-# 파트 1 그래프 및 데이터 리포트
+# ★ 파트 1 그래프 높이 확대 (height=550 파라미터 추가)
 chart_cols_eval = ['실제_공급량합계', '방법1_예측(정밀)', '방법2_예측(단순)']
-st.line_chart(monthly_eval[chart_cols_eval], use_container_width=True)
+st.line_chart(monthly_eval[chart_cols_eval], use_container_width=True, height=550)
 st.dataframe(monthly_eval.style.format("{:,.0f}"), use_container_width=True)
 
 csv_eval = monthly_eval.to_csv(index=True).encode('utf-8-sig')
@@ -231,13 +228,13 @@ st.warning(f"""
 * **방법 2 (단순):** 최근 {y_years}년 동안의 동일 날짜 **일평균 기온들의 단순 평균값**을 미래 일자별 기온으로 대입.
 """)
 
-# 파트 2 그래프 및 데이터 리포트 (월별)
+# ★ 파트 2 그래프 높이 확대 (height=550 파라미터 추가)
 chart_cols_future = ['방법1_예측(정밀)', '방법2_예측(단순)']
-st.line_chart(monthly_future[chart_cols_future], use_container_width=True)
+st.line_chart(monthly_future[chart_cols_future], use_container_width=True, height=550)
 st.subheader("🗂️ 월별 데이터 요약 리포트")
 st.dataframe(monthly_future.style.format("{:,.0f}"), use_container_width=True)
 
-# ★ 파트 2 연도별 합산 요약표 추가
+# 파트 2 연도별 합산 요약표
 st.subheader("📆 연도별 시나리오 합산 요약")
 st.dataframe(yearly_future.style.format("{:,.0f}"), use_container_width=True)
 
