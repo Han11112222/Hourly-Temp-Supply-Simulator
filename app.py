@@ -11,7 +11,8 @@ from sklearn.metrics import r2_score
 # ---------------------------------------------------------
 st.set_page_config(page_title="도시가스 공급량 시뮬레이터", layout="wide")
 
-st.title("🔥 대성에너지 공급량 예측 모델 및 미래 시나리오 대시보드")
+# ★ 제목 수정: 세련된 네이밍 적용
+st.title("🔥 DSE 공급량 예측 모델 _ 정밀기온 활용 ver")
 st.markdown("과거 기상 및 공급량 데이터를 기반으로 AI 모델의 **적합도(R²)**를 검증하고, 이를 바탕으로 **미래의 공급량 시나리오**를 추정합니다.")
 
 # ==========================================
@@ -153,6 +154,11 @@ monthly_future = future_df.groupby('Year_Month').agg({
     '방법1_예측(정밀)': 'sum', '방법2_예측(단순)': 'sum'
 }).reset_index().set_index('Year_Month')
 
+# ★ 연도별 합산 요약 데이터 생성 (미래 추정용)
+yearly_future = future_df.groupby('Year').agg({
+    '방법1_예측(정밀)': 'sum', '방법2_예측(단순)': 'sum'
+}).reset_index().set_index('Year')
+
 
 # ==========================================
 # 4. 메인 대시보드 화면 구성 (수직 스크롤 구조)
@@ -166,30 +172,35 @@ st.divider()
 st.header("📊 [Part 1] 과거 모델 적합도 검증")
 st.markdown(f"선택된 검증 연도({min(eval_years)}년~{max(eval_years)}년)의 실제 실적 데이터와 AI 모델들의 예측치를 정밀 대조합니다.")
 
-# ★ 요청사항 반영: 하이라이트 배경 안에 R2, 함수식, 간략 설명 집약
 col_m1, col_m2 = st.columns(2)
 with col_m1:
     st.markdown("### 🏆 [방법 1] 정밀 기온 (1차 선형 모델)")
+    # ★ 해석 부분: 여러 줄로 짧게 끊어서 표현
     st.info(f"""
     **🎯 모델 학습 일치율 (R²): {train_r2_m1 * 100:.2f}%**
     
-    ** 도출된 1일 공급량 함수식:**
+    **📉 도출된 1일 공급량 함수식:**
     $$y = {coef_m1[0]:.2f}x + {inter_m1:.0f}$$
     *(x = 1일 누적 난방도일(HDD))*
     
-    💡 **해석:** 1시간 단위 온도를 기반으로 계산된 HDD는 기온과 공급량 사이의 비선형적(가속도 법칙) 특성을 이미 내포하고 있어, 안정적인 1차 선형 모델만으로도 매우 높은 예측력을 보여줍니다.
+    💡 **해석 요약:** * 1시간 단위 온도를 기반으로 계산된 HDD 지표 활용
+    * 기온과 공급량 사이의 비선형적(가속도 법칙) 특성을 이미 내포함
+    * 복잡한 수식 없이 안정적인 1차 선형 모델만으로 높은 예측력 확보
     """)
 
 with col_m2:
     st.markdown("### 📊 [방법 2] 단순 평균기온 (3차 다항식)")
+    # ★ 해석 부분: 여러 줄로 짧게 끊어서 표현
     st.info(f"""
     **🎯 모델 학습 일치율 (R²): {train_r2_m2 * 100:.2f}%**
     
-    ** 도출된 1일 공급량 함수식:**
+    **📉 도출된 1일 공급량 함수식:**
     $$y = {coef_m2[2]:.2f}x^3 + {coef_m2[1]:.2f}x^2 + {coef_m2[0]:.2f}x + {inter_m2:.0f}$$
     *(x = 구글시트 일 평균기온)*
     
-    💡 **해석:** 가공되지 않은 일 평균기온은 동절기 급증하는 공급량 특성을 선형으로 맞추기 어렵기 때문에, 3차 곡선 함수를 적용하여 추위가 심해질 때의 민감도를 포착하도록 설계되었습니다.
+    💡 **해석 요약:** * 가공되지 않은 일 평균기온이 가진 설명력의 한계 보완
+    * 동절기에 급증하는 공급량 특성에 맞추어 3차 곡선 함수 적용
+    * 추위가 극심해질 때 수요가 기하급수적으로 늘어나는 민감도 포착
     """)
 
 # 파트 1 그래프 및 데이터 리포트
@@ -220,10 +231,15 @@ st.warning(f"""
 * **방법 2 (단순):** 최근 {y_years}년 동안의 동일 날짜 **일평균 기온들의 단순 평균값**을 미래 일자별 기온으로 대입.
 """)
 
-# 파트 2 그래프 및 데이터 리포트
+# 파트 2 그래프 및 데이터 리포트 (월별)
 chart_cols_future = ['방법1_예측(정밀)', '방법2_예측(단순)']
 st.line_chart(monthly_future[chart_cols_future], use_container_width=True)
+st.subheader("🗂️ 월별 데이터 요약 리포트")
 st.dataframe(monthly_future.style.format("{:,.0f}"), use_container_width=True)
+
+# ★ 파트 2 연도별 합산 요약표 추가
+st.subheader("📆 연도별 시나리오 합산 요약")
+st.dataframe(yearly_future.style.format("{:,.0f}"), use_container_width=True)
 
 csv_future = monthly_future.to_csv(index=True).encode('utf-8-sig')
 st.download_button("📥 미래 시나리오 추정 리포트 다운로드", data=csv_future, file_name="미래시나리오_추정리포트.csv", mime="text/csv")
