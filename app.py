@@ -36,7 +36,7 @@ def load_and_preprocess_data():
     target_cols = [c for c in col_list if '공급량' in c or '합계' in c]
     TARGET_COL = target_cols[0] if target_cols else col_list[-1]
 
-    # ★ CDD 추가: 1시간 단위 데이터를 활용한 일일 누적 난방도일(HDD) & 냉방도일(CDD) 산출
+    # ★ 1시간 단위 데이터를 활용한 일일 누적 난방도일(HDD, 18도) & 냉방도일(CDD, 26도) 산출
     hour_cols = [f'Hour{i}' for i in range(1, 25)]
     temp_df['Daily_HDD'] = temp_df[hour_cols].apply(lambda x: np.maximum(18 - x, 0)).sum(axis=1) / 24
     temp_df['Daily_CDD'] = temp_df[hour_cols].apply(lambda x: np.maximum(x - 26, 0)).sum(axis=1) / 24
@@ -93,7 +93,6 @@ if not train_years or not eval_years or not future_years:
 # ==========================================
 # 3. 모델 학습 및 데이터 연산 파이프라인
 # ==========================================
-# 학습 결측치 제거에 Daily_CDD 포함
 train_df = merged_df[merged_df['Year'].isin(train_years)].dropna(subset=['Daily_HDD', 'Daily_CDD', SHEET_TEMP_COL])
 y_train = train_df[TARGET_COL]
 
@@ -115,7 +114,6 @@ train_r2_m2 = r2_score(y_train, model_m2.predict(train_df[[SHEET_TEMP_COL]]))
 
 # --- 데이터셋 1: 과거 검증용 연산 ---
 eval_df = merged_df[merged_df['Year'].isin(eval_years)].copy()
-# 평가에도 HDD, CDD 동시 투입
 eval_df['방법1_예측(정밀)'] = model_m1.predict(eval_df[['Daily_HDD', 'Daily_CDD']])
 eval_df['방법2_예측(단순)'] = model_m2.predict(eval_df[[SHEET_TEMP_COL]])
 eval_df['Year_Month'] = eval_df['Date'].dt.to_period('M').astype(str)
@@ -136,7 +134,7 @@ yearly_eval['방법1_오차율(%)'] = (yearly_eval['방법1_차이'] / yearly_ev
 yearly_eval['방법2_차이'] = yearly_eval['방법2_예측(단순)'] - yearly_eval['실제_공급량합계']
 yearly_eval['방법2_오차율(%)'] = (yearly_eval['방법2_차이'] / yearly_eval['실제_공급량합계']) * 100
 
-# --- 데이터셋 2: 미래 추정용 연산 ---
+# --- 데이터셋 2: 미래 추정용 연산 (기온 선 평균 방식으로 롤백) ---
 date_list = []
 for y in future_years:
     dates = pd.date_range(start=f'{y}-01-01', end=f'{y}-12-31')
@@ -148,7 +146,9 @@ scenario_temp_df = temp_df[temp_df['Year'].isin(sim_base_years)]
 scenario_merged_df = merged_df[merged_df['Year'].isin(sim_base_years)]
 
 hour_cols = [f'Hour{i}' for i in range(1, 25)]
+# 시간별 기온을 먼저 평균냄
 sim_hourly_profile = scenario_temp_df.groupby(['Month', 'Day'])[hour_cols].mean().reset_index()
+# 평균된 기온을 바탕으로 모의 도일(HDD/CDD) 계산
 sim_hourly_profile['Daily_HDD_sim'] = sim_hourly_profile[hour_cols].apply(lambda x: np.maximum(18 - x, 0)).sum(axis=1) / 24
 sim_hourly_profile['Daily_CDD_sim'] = sim_hourly_profile[hour_cols].apply(lambda x: np.maximum(x - 26, 0)).sum(axis=1) / 24
 
@@ -186,7 +186,6 @@ st.markdown(f"선택된 검증 연도({min(eval_years)}년~{max(eval_years)}년)
 col_m1, col_m2 = st.columns(2)
 with col_m1:
     st.markdown("### 🏆 [방법 1] 정밀 기온 (다중 선형 모델)")
-    # 수식에 CDD 변수 및 온도 기준 표기 반영
     st.info(f"""
     **🎯 모델 학습 일치율 (R²): {train_r2_m1 * 100:.2f}%**
     
@@ -194,7 +193,8 @@ with col_m1:
     $y = {coef_m1[0]:.2f}x_1 + {coef_m1[1]:.2f}x_2 + {inter_m1:.0f}$
     *(x₁ = 난방도일(HDD), x₂ = 냉방도일(CDD))*
     
-    💡 **기술적 근거:** * **HDD(난방도일):** 기준 온도 18°C 적용
+    💡 **기술적 근거:**
+    * **HDD(난방도일):** 기준 온도 18°C 적용
     * **CDD(냉방도일):** 기준 온도 26°C 적용
     * 1시간 단위 정밀 온도 데이터를 활용해 비선형적 특성을 선형 구간으로 완벽하게 해석함
     """)
@@ -208,7 +208,8 @@ with col_m2:
     $y = {coef_m2[2]:.2f}x^3 + {coef_m2[1]:.2f}x^2 + {coef_m2[0]:.2f}x + {inter_m2:.0f}$
     *(x = 구글시트 일 평균기온)*
     
-    💡 **해석 요약:** * 가공되지 않은 일 평균기온이 가진 설명력의 한계 보완
+    💡 **해석 요약:**
+    * 가공되지 않은 일 평균기온이 가진 설명력의 한계 보완
     * 동절기에 급증하는 공급량 특성에 맞추어 3차 곡선 함수 적용
     * 추위가 극심해질 때 수요가 기하급수적으로 늘어나는 민감도 포착
     """)
@@ -252,7 +253,7 @@ st.markdown(f"검증된 모델을 기반으로 아직 실적이 없는 미래 �
 st.warning(f"""
 💡 **미래 기온 추정 시나리오 설정 완료**
 * **기온 산출 기준:** 과거 최근 **{y_years}개 연도** ({min(sim_base_years)}년 ~ {max(sim_base_years)}년)의 기후 패턴을 반영
-* **방법 1 (정밀):** 최근 {y_years}년 동일 날짜, **시간대별 각각의 평균 기온**으로 미래 일자별 모의 HDD(18°C) 및 CDD(26°C)를 재계산하여 대입.
+* **방법 1 (정밀):** 최근 {y_years}년 동일 날짜, **시간대별 각각의 평균 기온**을 먼저 산출한 뒤, 이를 바탕으로 미래 일자별 모의 HDD(18°C) 및 CDD(26°C)를 계산하여 대입.
 * **방법 2 (단순):** 최근 {y_years}년 동일 날짜 **일평균 기온들의 단순 평균값**을 미래 일자별 기온으로 대입.
 """)
 
