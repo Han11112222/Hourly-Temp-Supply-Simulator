@@ -50,7 +50,7 @@ def load_and_preprocess_data():
     
     return merged_df, TARGET_COL, SHEET_TEMP_COL, temp_df
 
-# [수정 완결] 깃허브 원본 엑셀(.xlsx) 파일 및 지정 시트 로드 로직 적용
+# [최종 수정 완결] 파일 진짜 확장자(.csv vs .xlsx) 자동 판별 및 인코딩 방어 로직 적용
 @st.cache_data
 def load_and_preprocess_heating_data():
     try:
@@ -58,20 +58,34 @@ def load_and_preprocess_heating_data():
     except:
         temp_df = pd.read_csv('합산기온.csv', encoding='cp949') 
 
-    # 깃허브 디렉토리 내에서 '공급량실적' 키워드가 포함된 엑셀 파일(.xlsx) 자동 탐색 (대소문자 방어)
     import os
-    target_file = '공급량실적_계획_실적_MJ.xlsx' # 기본값 세팅
+    target_file = None
     
+    # 디렉토리 내에서 '공급량'과 '실적'이 모두 포함된 실적 데이터 파일 자동 검색
     for f in os.listdir('.'):
-        if '공급량실적' in f and ('xlsx' in f.lower() or 'xls' in f.lower()):
+        if '공급량' in f and '실적' in f:
             target_file = f
             break
-
+            
+    if target_file is None:
+        st.error("❌ 깃허브 리포지토리에서 '공급량'과 '실적' 키워드가 포함된 파일을 찾을 수 없습니다. 파일명을 확인해 주세요.")
+        st.stop()
+        
+    # 파일의 진짜 확장자 끝자리를 체크하여 CSV 또는 Excel로 유연하게 로드
     try:
-        # csv가 아닌 엑셀 구조이므로 pd.read_excel을 사용하여 '공급량_실적' 시트를 조준합니다.
-        supply_df = pd.read_excel(target_file, sheet_name='공급량_실적')
+        if target_file.lower().endswith('.csv'):
+            try:
+                supply_df = pd.read_csv(target_file, encoding='utf-8')
+            except:
+                supply_df = pd.read_csv(target_file, encoding='cp949')
+        else:
+            # 확장자가 xlsx 또는 xls인 진짜 엑셀 파일일 경우
+            try:
+                supply_df = pd.read_excel(target_file, sheet_name='공급량_실적')
+            except:
+                supply_df = pd.read_excel(target_file, sheet_name=0) # 시트명이 다를 경우 첫 번째 시트 로드
     except Exception as e:
-        st.error(f"❌ 깃허브 리포지토리에서 엑셀 파일({target_file}) 또는 '공급량_실적' 시트를 찾을 수 없습니다. 에러 원인: {e}")
+        st.error(f"❌ 파일을 읽는 중 오류가 발생했습니다. 파일명: {target_file} | 에러 내용: {e}")
         st.stop()
 
     col_list = supply_df.columns.tolist()
