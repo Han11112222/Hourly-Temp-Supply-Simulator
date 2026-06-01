@@ -50,33 +50,29 @@ def load_and_preprocess_data():
     
     return merged_df, TARGET_COL, SHEET_TEMP_COL, temp_df
 
-# [수정 보완] 파일명 불일치로 인한 FileNotFoundError 방지 로직 적용
+# [수정 완결] 깃허브 원본 엑셀(.xlsx) 파일 및 지정 시트 로드 로직 적용
 @st.cache_data
 def load_and_preprocess_heating_data():
     try:
         temp_df = pd.read_csv('합산기온.csv', encoding='utf-8') 
     except:
-        temp_df = pd.read_csv('합산기csv', encoding='cp949') 
+        temp_df = pd.read_csv('합산기온.csv', encoding='cp949') 
 
-    # 깃허브 디렉토리 내에서 '공급량_실적' 키워드가 포함된 CSV 파일 자동 탐색
+    # 깃허브 디렉토리 내에서 '공급량실적' 키워드가 포함된 엑셀 파일(.xlsx) 자동 탐색 (대소문자 방어)
     import os
-    target_file = '공급량실적_계획_실적_MJ.xlsx - 공급량_실적.csv' # 기본 매칭 파일명 사전 정의
+    target_file = '공급량실적_계획_실적_MJ.xlsx' # 기본값 세팅
     
     for f in os.listdir('.'):
-        if '공급량_실적' in f and f.endswith('.csv'):
+        if '공급량실적' in f and ('xlsx' in f.lower() or 'xls' in f.lower()):
             target_file = f
             break
 
-    # 탐색된 파일명으로 데이터 로드 시도
     try:
-        supply_df = pd.read_csv(target_file, encoding='utf-8')
-    except:
-        try:
-            supply_df = pd.read_csv(target_file, encoding='cp949')
-        except FileNotFoundError:
-            # 완전히 파일이 없을 때 사용자에게 깃허브 업로드 상태를 직관적으로 알려주는 경고창 출력
-            st.error(f"❌ 깃허브 리포지토리에서 '공급량_실적' 키워드가 포함된 CSV 파일을 찾을 수 없습니다. 파일이 루트 디렉토리에 정상적으로 푸시(Push)되었는지 확인해주세요.")
-            st.stop()
+        # csv가 아닌 엑셀 구조이므로 pd.read_excel을 사용하여 '공급량_실적' 시트를 조준합니다.
+        supply_df = pd.read_excel(target_file, sheet_name='공급량_실적')
+    except Exception as e:
+        st.error(f"❌ 깃허브 리포지토리에서 엑셀 파일({target_file}) 또는 '공급량_실적' 시트를 찾을 수 없습니다. 에러 원인: {e}")
+        st.stop()
 
     col_list = supply_df.columns.tolist()
     DATE_COL_IN_SHEET = col_list[0]
