@@ -50,13 +50,62 @@ def load_and_preprocess_data():
     
     return merged_df, TARGET_COL, SHEET_TEMP_COL, temp_df
 
-with st.spinner("데이터베이스를 불러오는 중입니다..."):
-    merged_df, TARGET_COL, SHEET_TEMP_COL, temp_df = load_and_preprocess_data()
+# [신규 추가] 개별난방용 데이터를 위한 로드 및 전처리 함수
+@st.cache_data
+def load_and_preprocess_heating_data():
+    try:
+        temp_df = pd.read_csv('합산기온.csv', encoding='utf-8') 
+    except:
+        temp_df = pd.read_csv('합산기온.csv', encoding='cp949') 
+
+    # 깃허브에 업로드한 새로운 엑셀 시트 파일 로드
+    try:
+        supply_df = pd.read_csv('공급량실적_계획_실적_MJ.xlsx - 공급량_실적.csv', encoding='utf-8')
+    except:
+        supply_df = pd.read_csv('공급량실적_계획_실적_MJ.xlsx - 공급량_실적.csv', encoding='cp949')
+
+    col_list = supply_df.columns.tolist()
+    DATE_COL_IN_SHEET = col_list[0]
+    
+    sheet_temp_cols = [c for c in col_list if '기온' in c]
+    SHEET_TEMP_COL = sheet_temp_cols[0] if sheet_temp_cols else col_list[1]
+    
+    # 분석 대상을 '개별난방용'으로 고정 지정
+    TARGET_COL = '개별난방용'
+
+    # ★ 1시간 단위 데이터를 활용한 일일 누적 난방도일(HDD, 18도) & 냉방도일(CDD, 26도) 산출
+    hour_cols = [f'Hour{i}' for i in range(1, 25)]
+    temp_df['Daily_HDD'] = temp_df[hour_cols].apply(lambda x: np.maximum(18 - x, 0)).sum(axis=1) / 24
+    temp_df['Daily_CDD'] = temp_df[hour_cols].apply(lambda x: np.maximum(x - 26, 0)).sum(axis=1) / 24
+    temp_df['Date'] = pd.to_datetime(temp_df[['Year', 'Month', 'Day']])
+
+    supply_df['Date'] = pd.to_datetime(supply_df[DATE_COL_IN_SHEET])
+    supply_df[TARGET_COL] = supply_df[TARGET_COL].astype(str).str.replace(r'[^\d.]', '', regex=True)
+    supply_df[TARGET_COL] = pd.to_numeric(supply_df[TARGET_COL], errors='coerce').fillna(0)
+
+    merged_df = pd.merge(temp_df, supply_df, on='Date', how='inner')
+    
+    return merged_df, TARGET_COL, SHEET_TEMP_COL, temp_df
+
 
 # ==========================================
 # 2. 좌측 사이드바: 컨트롤 패널
 # ==========================================
 st.sidebar.header("⚙️ 시뮬레이션 설정 패널")
+
+# [신규 추가] 좌측 사이드바에 분석 대상 선택 라디오 버튼 배치
+analysis_mode = st.sidebar.radio(
+    "📊 분석 대상 선택",
+    options=["1. 전체 공급량 분석", "2. 개별난방용 공급량 분석"],
+    index=0
+)
+
+# 선택된 분석 대상에 따라 데이터를 조건부로 교체 로드
+with st.spinner("데이터베이스를 불러오는 중입니다..."):
+    if analysis_mode == "1. 전체 공급량 분석":
+        merged_df, TARGET_COL, SHEET_TEMP_COL, temp_df = load_and_preprocess_data()
+    else:
+        merged_df, TARGET_COL, SHEET_TEMP_COL, temp_df = load_and_preprocess_heating_data()
 
 all_train_years = sorted(merged_df['Year'].dropna().unique())
 default_train_years = [y for y in all_train_years if y >= 2015 and y <= 2023 and y != 2021]
