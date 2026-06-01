@@ -50,19 +50,33 @@ def load_and_preprocess_data():
     
     return merged_df, TARGET_COL, SHEET_TEMP_COL, temp_df
 
-# [신규 추가] 개별난방용 데이터를 위한 로드 및 전처리 함수
+# [수정 보완] 파일명 불일치로 인한 FileNotFoundError 방지 로직 적용
 @st.cache_data
 def load_and_preprocess_heating_data():
     try:
         temp_df = pd.read_csv('합산기온.csv', encoding='utf-8') 
     except:
-        temp_df = pd.read_csv('합산기온.csv', encoding='cp949') 
+        temp_df = pd.read_csv('합산기csv', encoding='cp949') 
 
-    # 깃허브에 업로드한 새로운 엑셀 시트 파일 로드
+    # 깃허브 디렉토리 내에서 '공급량_실적' 키워드가 포함된 CSV 파일 자동 탐색
+    import os
+    target_file = '공급량실적_계획_실적_MJ.xlsx - 공급량_실적.csv' # 기본 매칭 파일명 사전 정의
+    
+    for f in os.listdir('.'):
+        if '공급량_실적' in f and f.endswith('.csv'):
+            target_file = f
+            break
+
+    # 탐색된 파일명으로 데이터 로드 시도
     try:
-        supply_df = pd.read_csv('공급량실적_계획_실적_MJ.xlsx - 공급량_실적.csv', encoding='utf-8')
+        supply_df = pd.read_csv(target_file, encoding='utf-8')
     except:
-        supply_df = pd.read_csv('공급량실적_계획_실적_MJ.xlsx - 공급량_실적.csv', encoding='cp949')
+        try:
+            supply_df = pd.read_csv(target_file, encoding='cp949')
+        except FileNotFoundError:
+            # 완전히 파일이 없을 때 사용자에게 깃허브 업로드 상태를 직관적으로 알려주는 경고창 출력
+            st.error(f"❌ 깃허브 리포지토리에서 '공급량_실적' 키워드가 포함된 CSV 파일을 찾을 수 없습니다. 파일이 루트 디렉토리에 정상적으로 푸시(Push)되었는지 확인해주세요.")
+            st.stop()
 
     col_list = supply_df.columns.tolist()
     DATE_COL_IN_SHEET = col_list[0]
@@ -93,7 +107,7 @@ def load_and_preprocess_heating_data():
 # ==========================================
 st.sidebar.header("⚙️ 시뮬레이션 설정 패널")
 
-# [신규 추가] 좌측 사이드바에 분석 대상 선택 라디오 버튼 배치
+# 좌측 사이드바에 분석 대상 선택 라디오 버튼 배치
 analysis_mode = st.sidebar.radio(
     "📊 분석 대상 선택",
     options=["1. 전체 공급량 분석", "2. 개별난방용 공급량 분석"],
