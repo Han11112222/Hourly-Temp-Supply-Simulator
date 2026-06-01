@@ -50,7 +50,7 @@ def load_and_preprocess_data():
     
     return merged_df, TARGET_COL, SHEET_TEMP_COL, temp_df
 
-# 파일 진짜 확장자(.csv vs .xlsx) 자동 판별 및 인코딩 방어 로직 적용
+# [최종 완결 방어] 월별 데이터를 일별 데이터로 달력 스케일 업 하여 NaN 오류 완벽 차단
 @st.cache_data
 def load_and_preprocess_heating_data():
     try:
@@ -71,7 +71,7 @@ def load_and_preprocess_heating_data():
         st.error("❌ 깃허브 리포지토리에서 '공급량'과 '실적' 키워드가 포함된 파일을 찾을 수 없습니다. 파일명을 확인해 주세요.")
         st.stop()
         
-    # 파일의 진짜 확장자 끝자리를 체크하여 CSV 또는 Excel로 유연하게 로드
+    # 파일 확장자 판별 후 로드
     try:
         if target_file.lower().endswith('.csv'):
             try:
@@ -79,22 +79,23 @@ def load_and_preprocess_heating_data():
             except:
                 supply_df = pd.read_csv(target_file, encoding='cp949')
         else:
-            # 확장자가 xlsx 또는 xls인 진짜 엑셀 파일일 경우 (openpyxl 필요)
             try:
                 supply_df = pd.read_excel(target_file, sheet_name='공급량_실적')
             except:
-                supply_df = pd.read_excel(target_file, sheet_name=0) # 시트명이 다를 경우 첫 번째 시트 로드
+                supply_df = pd.read_excel(target_file, sheet_name=0)
     except Exception as e:
         st.error(f"❌ 파일을 읽는 중 오류가 발생했습니다. 파일명: {target_file} | 에러 내용: {e}")
         st.stop()
 
     col_list = supply_df.columns.tolist()
-    DATE_COL_IN_SHEET = col_list[0]
+    
+    # 엑셀/CSV 내부의 연, 월, 기온 컬럼명 매핑 자동 추적
+    year_col = '연' if '연' in col_list else ('Year' if 'Year' in col_list else col_list[1])
+    month_col = '월' if '월' in col_list else ('Month' if 'Month' in col_list else col_list[2])
     
     sheet_temp_cols = [c for c in col_list if '기온' in c]
-    SHEET_TEMP_COL = sheet_temp_cols[0] if sheet_temp_cols else col_list[1]
+    SHEET_TEMP_COL = sheet_temp_cols[0] if sheet_temp_cols else col_list[3]
     
-    # 분석 대상을 '개별난방용'으로 고정 지정
     TARGET_COL = '개별난방용'
 
     # ★ 1시간 단위 데이터를 활용한 일일 누적 난방도일(HDD, 18도) & 냉방도일(CDD, 26도) 산출
@@ -103,11 +104,23 @@ def load_and_preprocess_heating_data():
     temp_df['Daily_CDD'] = temp_df[hour_cols].apply(lambda x: np.maximum(x - 26, 0)).sum(axis=1) / 24
     temp_df['Date'] = pd.to_datetime(temp_df[['Year', 'Month', 'Day']])
 
-    supply_df['Date'] = pd.to_datetime(supply_df[DATE_COL_IN_SHEET])
+    # 데이터 정제 및 수치형 변환
     supply_df[TARGET_COL] = supply_df[TARGET_COL].astype(str).str.replace(r'[^\d.]', '', regex=True)
     supply_df[TARGET_COL] = pd.to_numeric(supply_df[TARGET_COL], errors='coerce').fillna(0)
+    
+    supply_df[SHEET_TEMP_COL] = supply_df[SHEET_TEMP_COL].astype(str).str.replace(r'[^\d.]', '', regex=True)
+    supply_df[SHEET_TEMP_COL] = pd.to_numeric(supply_df[SHEET_TEMP_COL], errors='coerce').fillna(0)
 
-    merged_df = pd.merge(temp_df, supply_df, on='Date', how='inner')
+    # 💡 [핵심 해결 로직] 월간 실적 데이터를 연/월 기준으로 일별 기온 달력에 매핑 분할 확장
+    supply_df_renamed = supply_df.rename(columns={year_col: 'Year', month_col: 'Month'})
+    supply_df_sub = supply_df_renamed[['Year', 'Month', SHEET_TEMP_COL, TARGET_COL]]
+    
+    # Date가 아닌 연/월(Year, Month) 단위로 병합하여 모든 일자에 데이터가 채워지도록 함 (NaN 방지)
+    merged_df = pd.merge(temp_df, supply_df_sub, on=['Year', 'Month'], how='inner')
+    
+    # 공급량 숫자가 30배로 뻥튀기되는 것을 막기 위해, 해당 월의 일수만큼 공급량을 N분의 1로 균등 분할
+    days_in_month = merged_df.groupby(['Year', 'Month'])[TARGET_COL].transform('count')
+    merged_df[TARGET_COL] = merged_df[TARGET_COL] / days_in_month
     
     return merged_df, TARGET_COL, SHEET_TEMP_COL, temp_df
 
