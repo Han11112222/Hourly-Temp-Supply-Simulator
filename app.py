@@ -50,7 +50,7 @@ def load_and_preprocess_data():
     
     return merged_df, TARGET_COL, SHEET_TEMP_COL, temp_df
 
-# [최종 수정 완결] 파일 진짜 확장자(.csv vs .xlsx) 자동 판별 및 인코딩 방어 로직 적용
+# 파일 진짜 확장자(.csv vs .xlsx) 자동 판별 및 인코딩 방어 로직 적용
 @st.cache_data
 def load_and_preprocess_heating_data():
     try:
@@ -79,7 +79,7 @@ def load_and_preprocess_heating_data():
             except:
                 supply_df = pd.read_csv(target_file, encoding='cp949')
         else:
-            # 확장자가 xlsx 또는 xls인 진짜 엑셀 파일일 경우
+            # 확장자가 xlsx 또는 xls인 진짜 엑셀 파일일 경우 (openpyxl 필요)
             try:
                 supply_df = pd.read_excel(target_file, sheet_name='공급량_실적')
             except:
