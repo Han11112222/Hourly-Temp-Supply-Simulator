@@ -243,6 +243,9 @@ sim_daily_profile.rename(columns={SHEET_TEMP_COL: f'{SHEET_TEMP_COL}_sim'}, inpl
 sim_profile = pd.merge(sim_hourly_profile[['Month', 'Day', 'Daily_HDD_sim', 'Daily_CDD_sim']], sim_daily_profile, on=['Month', 'Day'])
 future_df = pd.merge(future_base_df, sim_profile, on=['Month', 'Day'], how='left')
 
+# 💡 [핵심 수정 부분] 윤년(2월 29일) 결측치 방어를 위한 ffill(전일 데이터로 채움) 적용 💡
+future_df[['Daily_HDD_sim', 'Daily_CDD_sim', f'{SHEET_TEMP_COL}_sim']] = future_df[['Daily_HDD_sim', 'Daily_CDD_sim', f'{SHEET_TEMP_COL}_sim']].ffill()
+
 future_df['방법1_예측(정밀)'] = model_m1.predict(future_df[['Daily_HDD_sim', 'Daily_CDD_sim']].rename(columns={'Daily_HDD_sim': 'Daily_HDD', 'Daily_CDD_sim': 'Daily_CDD'}))
 future_df['방법2_예측(단순)'] = model_m2.predict(future_df[[f'{SHEET_TEMP_COL}_sim']].rename(columns={f'{SHEET_TEMP_COL}_sim': SHEET_TEMP_COL}))
 future_df['Year_Month'] = future_df['Date'].dt.to_period('M').astype(str)
