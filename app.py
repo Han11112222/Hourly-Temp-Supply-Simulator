@@ -58,31 +58,12 @@ def load_and_preprocess_heating_data():
     except:
         temp_df = pd.read_csv('합산기온.csv', encoding='cp949') 
 
-    import os
-    target_file = None
-    
-    for f in os.listdir('.'):
-        if '공급량' in f and '실적' in f:
-            target_file = f
-            break
-            
-    if target_file is None:
-        st.error("❌ 깃허브 리포지토리에서 '공급량'과 '실적' 키워드가 포함된 파일을 찾을 수 없습니다. 파일명을 확인해 주세요.")
-        st.stop()
-        
+    # 로컬 파일 대신 지정해주신 구글 스프레드시트 링크에서 데이터 로드
+    sheet_url_2 = "https://docs.google.com/spreadsheets/d/1vS-a9XrbjjIznHxntuFIM6hmml6qTlR2Cayw77p_Rao/export?format=csv&gid=0"
     try:
-        if target_file.lower().endswith('.csv'):
-            try:
-                supply_df = pd.read_csv(target_file, encoding='utf-8')
-            except:
-                supply_df = pd.read_csv(target_file, encoding='cp949')
-        else:
-            try:
-                supply_df = pd.read_excel(target_file, sheet_name='공급량_실적')
-            except:
-                supply_df = pd.read_excel(target_file, sheet_name=0)
+        supply_df = pd.read_csv(sheet_url_2)
     except Exception as e:
-        st.error(f"❌ 파일을 읽는 중 오류가 발생했습니다. 파일명: {target_file} | 에러 내용: {e}")
+        st.error(f"❌ 구글 시트를 읽는 중 오류가 발생했습니다. 링크를 확인해 주세요. | 에러 내용: {e}")
         st.stop()
 
     col_list = supply_df.columns.tolist()
@@ -250,13 +231,39 @@ future_df['방법1_예측(정밀)'] = model_m1.predict(future_df[['Daily_HDD_sim
 future_df['방법2_예측(단순)'] = model_m2.predict(future_df[[f'{SHEET_TEMP_COL}_sim']].rename(columns={f'{SHEET_TEMP_COL}_sim': SHEET_TEMP_COL}))
 future_df['Year_Month'] = future_df['Date'].dt.to_period('M').astype(str)
 
-monthly_future = future_df.groupby('Year_Month').agg({
+# 예측치 집계
+monthly_future_pred = future_df.groupby('Year_Month').agg({
     '방법1_예측(정밀)': 'sum', '방법2_예측(단순)': 'sum'
-}).reset_index().set_index('Year_Month')
+}).reset_index()
 
-yearly_future = future_df.groupby('Year').agg({
+yearly_future_pred = future_df.groupby('Year').agg({
     '방법1_예측(정밀)': 'sum', '방법2_예측(단순)': 'sum'
-}).reset_index().set_index('Year')
+}).reset_index()
+
+# 💡 미래 연도의 실제 실적 데이터 가져오기
+future_actual_df = merged_df[merged_df['Year'].isin(future_years)].copy()
+if not future_actual_df.empty:
+    if 'Year_Month' not in future_actual_df.columns:
+        future_actual_df['Year_Month'] = future_actual_df['Date'].dt.to_period('M').astype(str)
+    actual_monthly = future_actual_df.groupby('Year_Month')[TARGET_COL].sum().reset_index().rename(columns={TARGET_COL: '실제_공급량합계'})
+    actual_yearly = future_actual_df.groupby('Year')[TARGET_COL].sum().reset_index().rename(columns={TARGET_COL: '실제_공급량합계'})
+else:
+    actual_monthly = pd.DataFrame(columns=['Year_Month', '실제_공급량합계'])
+    actual_yearly = pd.DataFrame(columns=['Year', '실제_공급량합계'])
+
+# 💡 병합 및 오차율 계산 (월별)
+monthly_future = pd.merge(monthly_future_pred, actual_monthly, on='Year_Month', how='left')
+monthly_future['방법1_차이'] = monthly_future['방법1_예측(정밀)'] - monthly_future['실제_공급량합계']
+monthly_future['방법1_오차율(%)'] = (monthly_future['방법1_차이'] / monthly_future['실제_공급량합계']) * 100
+monthly_future['방법2_차이'] = monthly_future['방법2_예측(단순)'] - monthly_future['실제_공급량합계']
+monthly_future['방법2_오차율(%)'] = (monthly_future['방법2_차이'] / monthly_future['실제_공급량합계']) * 100
+
+# 💡 병합 및 오차율 계산 (연도별)
+yearly_future = pd.merge(yearly_future_pred, actual_yearly, on='Year', how='left')
+yearly_future['방법1_차이'] = yearly_future['방법1_예측(정밀)'] - yearly_future['실제_공급량합계']
+yearly_future['방법1_오차율(%)'] = (yearly_future['방법1_차이'] / yearly_future['실제_공급량합계']) * 100
+yearly_future['방법2_차이'] = yearly_future['방법2_예측(단순)'] - yearly_future['실제_공급량합계']
+yearly_future['방법2_오차율(%)'] = (yearly_future['방법2_차이'] / yearly_future['실제_공급량합계']) * 100
 
 
 # ==========================================
@@ -347,14 +354,27 @@ st.warning(f"""
 * **방법 2 (단순):** 최근 {y_years}년 동일 날짜 **일평균 기온들의 단순 평균값**을 미래 일자별 기온으로 대입.
 """)
 
-chart_cols_future = ['방법1_예측(정밀)', '방법2_예측(단순)']
-st.line_chart(monthly_future[chart_cols_future], use_container_width=True, height=550)
+# 💡 차트에 실제 공급량 합계 추가
+chart_cols_future = ['실제_공급량합계', '방법1_예측(정밀)', '방법2_예측(단순)']
+st.line_chart(monthly_future.set_index('Year_Month')[chart_cols_future], use_container_width=True, height=550)
+
+format_dict_future = {
+    '실제_공급량합계': "{:,.0f}",
+    '방법1_예측(정밀)': "{:,.0f}",
+    '방법1_차이': "{:,.0f}",
+    '방법1_오차율(%)': "{:.1f}%",
+    '방법2_예측(단순)': "{:,.0f}",
+    '방법2_차이': "{:,.0f}",
+    '방법2_오차율(%)': "{:.1f}%"
+}
 
 st.subheader("🗂️ 월별 데이터 요약 리포트")
-st.dataframe(monthly_future.style.format("{:,.0f}"), use_container_width=True)
+display_monthly_future = monthly_future[['Year_Month', '실제_공급량합계', '방법1_예측(정밀)', '방법1_차이', '방법1_오차율(%)', '방법2_예측(단순)', '방법2_차이', '방법2_오차율(%)']]
+st.dataframe(display_monthly_future.style.format(format_dict_future), use_container_width=True, hide_index=True)
 
 st.subheader("📆 연도별 시나리오 합산 요약")
-st.dataframe(yearly_future.style.format("{:,.0f}"), use_container_width=True)
+display_yearly_future = yearly_future[['Year', '실제_공급량합계', '방법1_예측(정밀)', '방법1_차이', '방법1_오차율(%)', '방법2_예측(단순)', '방법2_차이', '방법2_오차율(%)']]
+st.dataframe(display_yearly_future.style.format(format_dict_future), use_container_width=True, hide_index=True)
 
-csv_future = monthly_future.to_csv(index=True).encode('utf-8-sig')
+csv_future = display_monthly_future.to_csv(index=False).encode('utf-8-sig')
 st.download_button("📥 미래 시나리오 추정 리포트 다운로드", data=csv_future, file_name="미래시나리오_추정리포트.csv", mime="text/csv")
