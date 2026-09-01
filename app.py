@@ -78,27 +78,38 @@ def load_monthly_avg_temp():
 @st.cache_data
 def load_and_preprocess_data(monthly_temp_df):
     """
-    공급량 소스: 구글시트 (전체 공급량)
+    공급량 소스: 1vS-a9X 구글시트 gid=0 (공급량 실적 탭) - 전체 합계
     방법1: CSV HDD/CDD
     방법2: 구글시트 월별 평균기온
     """
     temp_df = load_temp_csv()
 
-    sheet_url = "https://docs.google.com/spreadsheets/d/13HrIz6OytYDykXeXzXJ02I6XbaKin1YaKBoO2kBd6Bs/export?format=csv&gid=0"
-    supply_df = pd.read_csv(sheet_url)
+    # ★ 공급량 실적 시트 (gid=0) 로드
+    sheet_url = "https://docs.google.com/spreadsheets/d/1vS-a9XrbjjIznHxntuFIM6hmml6qTlR2Cayw77p_Rao/export?format=csv&gid=0"
+    try:
+        supply_df = pd.read_csv(sheet_url)
+    except Exception as e:
+        st.error(f"❌ 공급량 구글시트 로드 오류: {e}")
+        st.stop()
 
     col_list = supply_df.columns.tolist()
-    DATE_COL_IN_SHEET = col_list[0]
+    DATE_COL_IN_SHEET = col_list[0]  # A열: 날짜
 
-    target_cols = [c for c in col_list if '공급량' in c or '합계' in c]
-    TARGET_COL = target_cols[0] if target_cols else col_list[-1]
+    # 합계 컬럼 탐지: '합계' '합산' '총' 키워드 → 없으면 마지막 컬럼
+    target_cols = [c for c in col_list if '합계' in str(c) or '합산' in str(c) or '총' in str(c)]
+    TARGET_COL = target_cols[-1] if target_cols else col_list[-1]
 
-    # 공급량 시트: 날짜 파싱 후 Year/Month 추출
-    supply_df['Date_parsed'] = pd.to_datetime(supply_df[DATE_COL_IN_SHEET])
+    # 날짜 파싱 및 Year/Month 추출
+    supply_df['Date_parsed'] = pd.to_datetime(supply_df[DATE_COL_IN_SHEET], errors='coerce')
+    supply_df = supply_df.dropna(subset=['Date_parsed'])
     supply_df['Year']  = supply_df['Date_parsed'].dt.year
     supply_df['Month'] = supply_df['Date_parsed'].dt.month
+
     supply_df[TARGET_COL] = supply_df[TARGET_COL].astype(str).str.replace(r'[^\d.]', '', regex=True)
     supply_df[TARGET_COL] = pd.to_numeric(supply_df[TARGET_COL], errors='coerce').fillna(0)
+
+    # 공급량 0인 행 제거 (데이터 없는 미래 행 방지)
+    supply_df = supply_df[supply_df[TARGET_COL] > 0]
 
     # Year/Month 기준으로 merge (컬럼 충돌 방지)
     supply_sub = supply_df[['Year', 'Month', TARGET_COL]].drop_duplicates(subset=['Year', 'Month'])
