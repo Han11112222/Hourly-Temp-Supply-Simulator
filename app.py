@@ -70,10 +70,12 @@ def load_and_preprocess_data(monthly_temp_df):
         st.stop()
 
     col_list = supply_df.columns.tolist()
-    DATE_COL_IN_SHEET = col_list[0]
+    DATE_COL_IN_SHEET = col_list[0]  # A열: 날짜
 
-    # ★ E열(index=4)부터 마지막 컬럼까지 상품별 공급량 합산 → 전체 합계 생성
-    supply_cols = col_list[4:]  # E열부터 마지막까지
+    # ★ 날짜/연/월/평균기온 4개 컬럼 제외한 나머지가 상품별 공급량
+    # (컬럼명 기반으로 탐지하여 인덱스 오류 방지)
+    skip_cols = set(col_list[:4])  # 날짜, 연, 월, 평균기온
+    supply_cols = [c for c in col_list if c not in skip_cols]
     for c in supply_cols:
         supply_df[c] = pd.to_numeric(
             supply_df[c].astype(str).str.replace(r'[^\d.]', '', regex=True), errors='coerce'
@@ -314,15 +316,47 @@ yearly_future_pred = future_df.groupby('Year').agg({
 }).reset_index()
 
 # 미래 연도의 실제 실적 데이터 가져오기
-future_actual_df = merged_df[merged_df['Year'].isin(future_years)].copy()
+# ★ merged_df 대신 공급량 시트에서 직접 로드 (기온CSV 범위에 종속되지 않도록)
+@st.cache_data
+def load_actual_supply(future_years_tuple):
+    sheet_url = "https://docs.google.com/spreadsheets/d/1vS-a9XrbjjIznHxntuFIM6hmml6qTlR2Cayw77p_Rao/export?format=csv&gid=0"
+    try:
+        df = pd.read_csv(sheet_url)
+    except:
+        return pd.DataFrame(columns=['Year_Month', 'Year', '실제_공급량합계'])
+
+    col_list = df.columns.tolist()
+    DATE_COL = col_list[0]  # A열: 날짜
+
+    # ★ 상품별 컬럼: E열(index=4)부터이지만 컬럼명으로 탐지
+    # 날짜/연/월/평균기온 4개 제외한 나머지가 상품별
+    skip_cols = {DATE_COL, col_list[1], col_list[2], col_list[3]}  # 날짜, 연, 월, 평균기온
+    supply_cols = [c for c in col_list if c not in skip_cols]
+
+    for c in supply_cols:
+        df[c] = pd.to_numeric(
+            df[c].astype(str).str.replace(r'[^\d.]', '', regex=True),
+            errors='coerce'
+        ).fillna(0)
+    df['실제_공급량합계'] = df[supply_cols].sum(axis=1)
+
+    df['Date_parsed'] = pd.to_datetime(df[DATE_COL], errors='coerce')
+    df = df.dropna(subset=['Date_parsed'])
+    df['Year'] = df['Date_parsed'].dt.year
+    df['Month'] = df['Date_parsed'].dt.month
+    df['Year_Month'] = df['Date_parsed'].dt.to_period('M').astype(str)
+
+    # m+2 구조: 실적이 없는 행(합계 0) 제거
+    df = df[df['실제_공급량합계'] > 0]
+    return df[df['Year'].isin(list(future_years_tuple))].copy()
+
+future_actual_df = load_actual_supply(tuple(future_years))
 if not future_actual_df.empty:
-    if 'Year_Month' not in future_actual_df.columns:
-        future_actual_df['Year_Month'] = future_actual_df['Date'].dt.to_period('M').astype(str)
-    actual_monthly = future_actual_df.groupby('Year_Month')[TARGET_COL].sum().reset_index().rename(columns={TARGET_COL: '실제_공급량합계'})
-    actual_yearly = future_actual_df.groupby('Year')[TARGET_COL].sum().reset_index().rename(columns={TARGET_COL: '실제_공급량합계'})
+    actual_monthly = future_actual_df.groupby('Year_Month')['실제_공급량합계'].sum().reset_index()
+    actual_yearly  = future_actual_df.groupby('Year')['실제_공급량합계'].sum().reset_index()
 else:
     actual_monthly = pd.DataFrame(columns=['Year_Month', '실제_공급량합계'])
-    actual_yearly = pd.DataFrame(columns=['Year', '실제_공급량합계'])
+    actual_yearly  = pd.DataFrame(columns=['Year', '실제_공급량합계'])
 
 monthly_future = pd.merge(monthly_future_pred, actual_monthly, on='Year_Month', how='left')
 monthly_future['방법1_차이'] = monthly_future['방법1_예측(정밀)'] - monthly_future['실제_공급량합계']
