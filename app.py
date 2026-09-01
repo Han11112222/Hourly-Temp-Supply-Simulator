@@ -72,9 +72,14 @@ def load_and_preprocess_data(monthly_temp_df):
     col_list = supply_df.columns.tolist()
     DATE_COL_IN_SHEET = col_list[0]
 
-    # 합계 컬럼 탐지: '합계' '합산' '총' 키워드 → 없으면 마지막 컬럼
-    target_cols = [c for c in col_list if '합계' in str(c) or '합산' in str(c) or '총' in str(c)]
-    TARGET_COL = target_cols[-1] if target_cols else col_list[-1]
+    # ★ E열(index=4)부터 마지막 컬럼까지 상품별 공급량 합산 → 전체 합계 생성
+    supply_cols = col_list[4:]  # E열부터 마지막까지
+    for c in supply_cols:
+        supply_df[c] = pd.to_numeric(
+            supply_df[c].astype(str).str.replace(r'[^\d.]', '', regex=True), errors='coerce'
+        ).fillna(0)
+    supply_df['전체합계'] = supply_df[supply_cols].sum(axis=1)
+    TARGET_COL = '전체합계'
 
     # ★ 방법2용 SHEET_TEMP_COL은 monthly_temp_df의 컬럼명으로 고정
     SHEET_TEMP_COL = 'Monthly_Avg_Temp'
@@ -88,10 +93,8 @@ def load_and_preprocess_data(monthly_temp_df):
     supply_df = supply_df.dropna(subset=['Date_parsed'])
     supply_df['Year'] = supply_df['Date_parsed'].dt.year
     supply_df['Month'] = supply_df['Date_parsed'].dt.month
-    supply_df[TARGET_COL] = supply_df[TARGET_COL].astype(str).str.replace(r'[^\d.]', '', regex=True)
-    supply_df[TARGET_COL] = pd.to_numeric(supply_df[TARGET_COL], errors='coerce').fillna(0)
 
-    # m+2 구조: 공급량 0인 행(미확정 실적) 제거
+    # m+2 구조: 합계가 0인 행(미확정 실적) 제거
     supply_df = supply_df[supply_df[TARGET_COL] > 0]
 
     # Year/Month 기준 merge (컬럼 충돌 방지)
