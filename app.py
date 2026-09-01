@@ -93,14 +93,16 @@ def load_and_preprocess_data(monthly_temp_df):
     target_cols = [c for c in col_list if '공급량' in c or '합계' in c]
     TARGET_COL = target_cols[0] if target_cols else col_list[-1]
 
-    supply_df['Date'] = pd.to_datetime(supply_df[DATE_COL_IN_SHEET])
-    supply_df['Year'] = supply_df['Date'].dt.year
-    supply_df['Month'] = supply_df['Date'].dt.month
+    # 공급량 시트: 날짜 파싱 후 Year/Month 추출
+    supply_df['Date_parsed'] = pd.to_datetime(supply_df[DATE_COL_IN_SHEET])
+    supply_df['Year']  = supply_df['Date_parsed'].dt.year
+    supply_df['Month'] = supply_df['Date_parsed'].dt.month
     supply_df[TARGET_COL] = supply_df[TARGET_COL].astype(str).str.replace(r'[^\d.]', '', regex=True)
     supply_df[TARGET_COL] = pd.to_numeric(supply_df[TARGET_COL], errors='coerce').fillna(0)
 
-    # 방법1용: CSV 시간별 기온(HDD/CDD) + 공급량 → 일별 merge
-    merged_df = pd.merge(temp_df, supply_df[['Date', 'Year', 'Month', TARGET_COL]], on='Date', how='inner')
+    # Year/Month 기준으로 merge (컬럼 충돌 방지)
+    supply_sub = supply_df[['Year', 'Month', TARGET_COL]].drop_duplicates(subset=['Year', 'Month'])
+    merged_df = pd.merge(temp_df, supply_sub, on=['Year', 'Month'], how='inner')
 
     # 공급량을 일평균으로 변환 (월별 공급량 ÷ 해당 월 일수)
     days_in_month = merged_df.groupby(['Year', 'Month'])[TARGET_COL].transform('count')
