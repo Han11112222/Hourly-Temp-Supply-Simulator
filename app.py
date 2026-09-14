@@ -26,7 +26,7 @@ LINE_COLORS = {
     '방법1_예측(정밀)':    "#2ecc71",
     '방법2_예측(단순)':    "#f39c12",
     '냉방용_판매량':       "#1f4e9c",
-    '예측_판매량':         "#66b2ff",
+    '예측_판매량_v1':         "#66b2ff",
     '예측_판매량_v2':      "#e74c3c",
     '예측_판매량_v3':      "#8e44ad",
     '판매량_계획':         "#f1948a",
@@ -34,7 +34,7 @@ LINE_COLORS = {
 
 SERIES_LABELS = {
     '냉방용_판매량':  '실적',
-    '예측_판매량':    '기존 단일 3차식',
+    '예측_판매량_v1':    '기존 단일 3차식',
     '예측_판매량_v2': '분리·3차식(참고)',
     '예측_판매량_v3': '분리·2차식',
     '판매량_계획':    '판매량 계획',
@@ -466,22 +466,25 @@ def _dynamic_fmt(df, x_col):
     return fmt
 
 
-def _build_diff_table(df, x_col, target_col, selected_cols):
+def _build_diff_table(df, x_col, target_col, selected_cols, target_label=None):
     """
     df에서 x_col + selected_cols(원본값 컬럼)만 뽑아 표를 만들고,
     target_col이 selected_cols에 포함돼 있으면 나머지 선택 시리즈마다
-    target 대비 '_차이' / '_오차율(%)' 컬럼을 자동으로 추가한다.
+    target 대비 '_{기준}대비차이' / '_{기준}대비오차율(%)' 컬럼을 자동으로 추가한다.
+    target_label을 안 주면 SERIES_LABELS에서 target_col의 한글 라벨을 찾아 사용한다
+    (예: TARGET → '실적') — 컬럼명만 보고도 무엇과 비교한 차이인지 바로 알 수 있게 하기 위함.
     """
     cols = [c for c in selected_cols if c in df.columns]
     out = df[[x_col] + cols].copy()
     if target_col in cols:
+        label = target_label or SERIES_LABELS.get(target_col, target_col)
         for c in cols:
             if c == target_col:
                 continue
-            out[f'{c}_차이'] = out[c] - out[target_col]
+            out[f'{c}_{label}대비차이'] = out[c] - out[target_col]
             with np.errstate(divide='ignore', invalid='ignore'):
-                out[f'{c}_오차율(%)'] = np.where(
-                    out[target_col] != 0, out[f'{c}_차이'] / out[target_col] * 100, np.nan)
+                out[f'{c}_{label}대비오차율(%)'] = np.where(
+                    out[target_col] != 0, out[f'{c}_{label}대비차이'] / out[target_col] * 100, np.nan)
     return out
 
 
@@ -602,12 +605,12 @@ ${poly_eq_str(cs, isu)}$
     # ══════════════════════════════════════════
     st.subheader("📊 과거 모델 적합도 검증 (냉방용)")
     eval_df_c = merged_cool[merged_cool['Year'].isin(eval_years_c)].copy()
-    eval_df_c['예측_판매량'] = model_base.predict(eval_df_c[['검침기온']])
+    eval_df_c['예측_판매량_v1'] = model_base.predict(eval_df_c[['검침기온']])
     eval_df_c['예측_판매량_v3'] = predict_piecewise_seasonal(models_final, eval_df_c['검침기온'].values)
 
     valid_eval = eval_df_c['예측_판매량_v3'].notna()
-    r2_base_eval = r2_score(eval_df_c.loc[valid_eval, TARGET], eval_df_c.loc[valid_eval, '예측_판매량'])
-    mae_base_eval = np.mean(np.abs(eval_df_c.loc[valid_eval, '예측_판매량'] - eval_df_c.loc[valid_eval, TARGET]))
+    r2_base_eval = r2_score(eval_df_c.loc[valid_eval, TARGET], eval_df_c.loc[valid_eval, '예측_판매량_v1'])
+    mae_base_eval = np.mean(np.abs(eval_df_c.loc[valid_eval, '예측_판매량_v1'] - eval_df_c.loc[valid_eval, TARGET]))
     r2_final_eval = r2_score(eval_df_c.loc[valid_eval, TARGET], eval_df_c.loc[valid_eval, '예측_판매량_v3'])
     mae_final_eval = np.mean(np.abs(eval_df_c.loc[valid_eval, '예측_판매량_v3'] - eval_df_c.loc[valid_eval, TARGET]))
 
@@ -617,7 +620,7 @@ ${poly_eq_str(cs, isu)}$
         r2_cubic_eval = r2_score(eval_df_c.loc[valid_eval, TARGET], eval_df_c.loc[valid_eval, '예측_판매량_v2'])
         mae_cubic_eval = np.mean(np.abs(eval_df_c.loc[valid_eval, '예측_판매량_v2'] - eval_df_c.loc[valid_eval, TARGET]))
 
-    monthly_eval_c = eval_df_c[['Year_Month', 'Year', 'Month', TARGET, '예측_판매량', '예측_판매량_v3']].copy()
+    monthly_eval_c = eval_df_c[['Year_Month', 'Year', 'Month', TARGET, '예측_판매량_v1', '예측_판매량_v3']].copy()
     if has_cubic_split:
         monthly_eval_c['예측_판매량_v2'] = eval_df_c['예측_판매량_v2']
 
@@ -626,8 +629,8 @@ ${poly_eq_str(cs, isu)}$
         monthly_eval_c = monthly_eval_c.merge(plan_df, on=['Year', 'Month'], how='left')
         has_plan_eval = monthly_eval_c['판매량_계획'].notna().any()
 
-    all_series_eval = [TARGET, '예측_판매량'] + (['예측_판매량_v2'] if has_cubic_split else []) \
-        + ['예측_판매량_v3'] + (['판매량_계획'] if has_plan_eval else [])
+    all_series_eval = (['판매량_계획'] if has_plan_eval else []) + [TARGET, '예측_판매량_v1'] \
+        + (['예측_판매량_v2'] if has_cubic_split else []) + ['예측_판매량_v3']
 
     # MAE가 가장 낮은(=가장 적합한) 모델에 자동으로 ✅ 표시
     mae_by_model = {"기존 단일 3차식": mae_base_eval, "분리·2차식": mae_final_eval}
@@ -699,7 +702,7 @@ ${poly_eq_str(cs, isu)}$
                 if len(t) > 0:
                     future_rows.append({'Year': y, 'Month': m, '검침기온': float(t.values[0])})
         future_df_c = pd.DataFrame(future_rows)
-        future_df_c['예측_판매량'] = model_base.predict(future_df_c[['검침기온']])
+        future_df_c['예측_판매량_v1'] = model_base.predict(future_df_c[['검침기온']])
         future_df_c['예측_판매량_v3'] = predict_piecewise_seasonal(models_final, future_df_c['검침기온'].values)
         if has_cubic_split:
             future_df_c['예측_판매량_v2'] = predict_piecewise_seasonal(models_cubic, future_df_c['검침기온'].values)
@@ -719,9 +722,8 @@ ${poly_eq_str(cs, isu)}$
         st.caption(f"미래 예측기온 추정: 최근 {y_years_c}개년"
                    f"({min(sim_base_years_c)}~{max(sim_base_years_c)}) 동월 실제기온 평균 사용")
 
-        agg_cols_fut = ['예측_판매량'] + (['예측_판매량_v2'] if has_cubic_split else []) \
-            + ['예측_판매량_v3'] + ([TARGET] if has_actual else []) \
-            + (['판매량_계획'] if has_plan_future else [])
+        agg_cols_fut = (['판매량_계획'] if has_plan_future else []) + ([TARGET] if has_actual else []) \
+            + ['예측_판매량_v1'] + (['예측_판매량_v2'] if has_cubic_split else []) + ['예측_판매량_v3']
 
         # 차트는 항상 전체 시리즈 표시 — 플롯리 자체 범례 클릭으로 라인 표시/숨김
         render_line_chart(future_df_c, 'Year_Month', agg_cols_fut, height=420)
