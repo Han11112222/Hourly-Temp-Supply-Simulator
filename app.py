@@ -35,6 +35,7 @@ LINE_COLORS = {
 SERIES_LABELS = {
     '냉방용_판매량':  '실적',
     '예측_판매량':    '기존 단일 3차식',
+    '예측_판매량_v2': '분리·3차식(참고)',
     '예측_판매량_v3': '채택모델(분리·2차식)',
     '판매량_계획':    '판매량 계획',
 }
@@ -592,9 +593,29 @@ ${poly_eq_str(cs, isu)}$
 
     has_cubic_split = models_cubic['winter'] is not None and models_cubic['summer'] is not None
     if has_cubic_split:
-        eval_df_c['예측_판매량_3차분리_참고'] = predict_piecewise_seasonal(models_cubic, eval_df_c['검침기온'].values)
-        r2_cubic_eval = r2_score(eval_df_c.loc[valid_eval, TARGET], eval_df_c.loc[valid_eval, '예측_판매량_3차분리_참고'])
-        mae_cubic_eval = np.mean(np.abs(eval_df_c.loc[valid_eval, '예측_판매량_3차분리_참고'] - eval_df_c.loc[valid_eval, TARGET]))
+        eval_df_c['예측_판매량_v2'] = predict_piecewise_seasonal(models_cubic, eval_df_c['검침기온'].values)
+        r2_cubic_eval = r2_score(eval_df_c.loc[valid_eval, TARGET], eval_df_c.loc[valid_eval, '예측_판매량_v2'])
+        mae_cubic_eval = np.mean(np.abs(eval_df_c.loc[valid_eval, '예측_판매량_v2'] - eval_df_c.loc[valid_eval, TARGET]))
+
+    monthly_eval_c = eval_df_c[['Year_Month', 'Year', 'Month', TARGET, '예측_판매량', '예측_판매량_v3']].copy()
+    if has_cubic_split:
+        monthly_eval_c['예측_판매량_v2'] = eval_df_c['예측_판매량_v2']
+
+    has_plan_eval = False
+    if plan_df is not None:
+        monthly_eval_c = monthly_eval_c.merge(plan_df, on=['Year', 'Month'], how='left')
+        has_plan_eval = monthly_eval_c['판매량_계획'].notna().any()
+
+    all_series_eval = [TARGET, '예측_판매량'] + (['예측_판매량_v2'] if has_cubic_split else []) \
+        + ['예측_판매량_v3'] + (['판매량_계획'] if has_plan_eval else [])
+
+    st.markdown("**📌 비교할 항목 선택** (차트·연도별·월별 표에 모두 동일하게 반영됩니다)")
+    selected_eval = st.multiselect(
+        "표시할 시리즈", options=all_series_eval, default=all_series_eval,
+        format_func=lambda c: SERIES_LABELS.get(c, c), key="eval_series_select")
+    if not selected_eval:
+        st.info("표시할 항목을 1개 이상 선택해주세요. 우선 전체 항목을 표시합니다.")
+        selected_eval = all_series_eval
 
     mcols = st.columns(3 if has_cubic_split else 2)
     mcols[0].metric("기존 단일 3차식 R²", f"{r2_base_eval:.4f}", delta=f"MAE {mae_base_eval:,.0f}")
@@ -606,23 +627,6 @@ ${poly_eq_str(cs, isu)}$
     else:
         mcols[1].metric("✅ 채택모델(분리·2차식) R²", f"{r2_final_eval:.4f}",
                         delta=f"{r2_final_eval - r2_base_eval:+.4f} (MAE {mae_final_eval:,.0f})")
-
-    monthly_eval_c = eval_df_c[['Year_Month', 'Year', 'Month', TARGET, '예측_판매량', '예측_판매량_v3']].copy()
-
-    has_plan_eval = False
-    if plan_df is not None:
-        monthly_eval_c = monthly_eval_c.merge(plan_df, on=['Year', 'Month'], how='left')
-        has_plan_eval = monthly_eval_c['판매량_계획'].notna().any()
-
-    all_series_eval = [TARGET, '예측_판매량', '예측_판매량_v3'] + (['판매량_계획'] if has_plan_eval else [])
-
-    st.markdown("**📌 비교할 항목 선택** (차트·연도별·월별 표에 모두 동일하게 반영됩니다)")
-    selected_eval = st.multiselect(
-        "표시할 시리즈", options=all_series_eval, default=all_series_eval,
-        format_func=lambda c: SERIES_LABELS.get(c, c), key="eval_series_select")
-    if not selected_eval:
-        st.info("표시할 항목을 1개 이상 선택해주세요. 우선 전체 항목을 표시합니다.")
-        selected_eval = all_series_eval
 
     render_line_chart(monthly_eval_c, 'Year_Month', selected_eval, height=420)
 
@@ -666,6 +670,8 @@ ${poly_eq_str(cs, isu)}$
         future_df_c = pd.DataFrame(future_rows)
         future_df_c['예측_판매량'] = model_base.predict(future_df_c[['검침기온']])
         future_df_c['예측_판매량_v3'] = predict_piecewise_seasonal(models_final, future_df_c['검침기온'].values)
+        if has_cubic_split:
+            future_df_c['예측_판매량_v2'] = predict_piecewise_seasonal(models_cubic, future_df_c['검침기온'].values)
         future_df_c['Year_Month'] = future_df_c.apply(
             lambda r: f"{int(r['Year'])}-{int(r['Month']):02d}", axis=1)
 
@@ -682,7 +688,8 @@ ${poly_eq_str(cs, isu)}$
         st.caption(f"미래 예측기온 추정: 최근 {y_years_c}개년"
                    f"({min(sim_base_years_c)}~{max(sim_base_years_c)}) 동월 실제기온 평균 사용")
 
-        agg_cols_fut = ['예측_판매량', '예측_판매량_v3'] + ([TARGET] if has_actual else []) \
+        agg_cols_fut = ['예측_판매량'] + (['예측_판매량_v2'] if has_cubic_split else []) \
+            + ['예측_판매량_v3'] + ([TARGET] if has_actual else []) \
             + (['판매량_계획'] if has_plan_future else [])
 
         st.markdown("**📌 비교할 항목 선택** (차트·연도별·월별 표에 모두 동일하게 반영됩니다)")
