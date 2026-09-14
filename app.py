@@ -628,26 +628,37 @@ ${poly_eq_str(cs, isu)}$
     all_series_eval = [TARGET, '예측_판매량'] + (['예측_판매량_v2'] if has_cubic_split else []) \
         + ['예측_판매량_v3'] + (['판매량_계획'] if has_plan_eval else [])
 
-    st.markdown("**📌 비교할 항목 선택** (차트·연도별·월별 표에 모두 동일하게 반영됩니다)")
+    # MAE가 가장 낮은(=가장 적합한) 모델에 자동으로 ✅ 표시
+    mae_by_model = {"기존 단일 3차식": mae_base_eval, "분리·2차식": mae_final_eval}
+    if has_cubic_split:
+        mae_by_model["분리·3차식 (참고)"] = mae_cubic_eval
+    best_label = min(mae_by_model, key=mae_by_model.get)
+    label_base = "✅ 기존 단일 3차식" if best_label == "기존 단일 3차식" else "기존 단일 3차식"
+    label_cubic = "✅ 분리·3차식 (참고)" if best_label == "분리·3차식 (참고)" else "분리·3차식 (참고)"
+    label_final = "✅ 분리·2차식" if best_label == "분리·2차식" else "분리·2차식"
+
+    mcols = st.columns(3 if has_cubic_split else 2)
+    render_r2_mae_card(mcols[0], label_base, r2_base_eval, mae_base_eval)
+    if has_cubic_split:
+        render_r2_mae_card(mcols[1], label_cubic, r2_cubic_eval, mae_cubic_eval,
+                           delta_r2=r2_cubic_eval - r2_base_eval)
+        render_r2_mae_card(mcols[2], label_final, r2_final_eval, mae_final_eval,
+                           delta_r2=r2_final_eval - r2_base_eval)
+    else:
+        render_r2_mae_card(mcols[1], label_final, r2_final_eval, mae_final_eval,
+                           delta_r2=r2_final_eval - r2_base_eval)
+
+    # 차트는 항상 전체 시리즈 표시 — 플롯리 자체 범례 클릭으로 라인 표시/숨김
+    render_line_chart(monthly_eval_c, 'Year_Month', all_series_eval, height=420)
+
+    # 아래 선택 위젯은 표(연도별/월별)에만 반영됨 (차트에는 영향 없음)
+    st.markdown("**📌 표에 표시할 항목 선택** (아래 연도별·월별 표에만 반영됩니다)")
     selected_eval = st.multiselect(
         "표시할 시리즈", options=all_series_eval, default=all_series_eval,
         format_func=lambda c: SERIES_LABELS.get(c, c), key="eval_series_select")
     if not selected_eval:
         st.info("표시할 항목을 1개 이상 선택해주세요. 우선 전체 항목을 표시합니다.")
         selected_eval = all_series_eval
-
-    mcols = st.columns(3 if has_cubic_split else 2)
-    render_r2_mae_card(mcols[0], "기존 단일 3차식", r2_base_eval, mae_base_eval)
-    if has_cubic_split:
-        render_r2_mae_card(mcols[1], "분리·3차식 (참고)", r2_cubic_eval, mae_cubic_eval,
-                           delta_r2=r2_cubic_eval - r2_base_eval)
-        render_r2_mae_card(mcols[2], "✅ 분리·2차식", r2_final_eval, mae_final_eval,
-                           delta_r2=r2_final_eval - r2_base_eval)
-    else:
-        render_r2_mae_card(mcols[1], "✅ 분리·2차식", r2_final_eval, mae_final_eval,
-                           delta_r2=r2_final_eval - r2_base_eval)
-
-    render_line_chart(monthly_eval_c, 'Year_Month', selected_eval, height=420)
 
     yearly_agg_eval = monthly_eval_c.groupby('Year')[all_series_eval].sum().reset_index()
     yearly_table_eval = _build_diff_table(yearly_agg_eval, 'Year', TARGET, selected_eval)
@@ -711,15 +722,17 @@ ${poly_eq_str(cs, isu)}$
             + ['예측_판매량_v3'] + ([TARGET] if has_actual else []) \
             + (['판매량_계획'] if has_plan_future else [])
 
-        st.markdown("**📌 비교할 항목 선택** (차트·연도별·월별 표에 모두 동일하게 반영됩니다)")
+        # 차트는 항상 전체 시리즈 표시 — 플롯리 자체 범례 클릭으로 라인 표시/숨김
+        render_line_chart(future_df_c, 'Year_Month', agg_cols_fut, height=420)
+
+        # 아래 선택 위젯은 표(연도별/월별)에만 반영됨 (차트에는 영향 없음)
+        st.markdown("**📌 표에 표시할 항목 선택** (아래 연도별·월별 표에만 반영됩니다)")
         selected_fut = st.multiselect(
             "표시할 시리즈", options=agg_cols_fut, default=agg_cols_fut,
             format_func=lambda c: SERIES_LABELS.get(c, c), key="future_series_select")
         if not selected_fut:
             st.info("표시할 항목을 1개 이상 선택해주세요. 우선 전체 항목을 표시합니다.")
             selected_fut = agg_cols_fut
-
-        render_line_chart(future_df_c, 'Year_Month', selected_fut, height=420)
 
         yearly_future_c = future_df_c.groupby('Year')[agg_cols_fut].sum().reset_index()
         yearly_future_c = _build_diff_table(
