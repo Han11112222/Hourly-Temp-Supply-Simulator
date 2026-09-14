@@ -458,12 +458,12 @@ def poly_eq_str(coefs, intercept):
 
 def _dynamic_fmt(df, x_col):
     """df의 x_col을 제외한 모든 컬럼에 대해 포맷을 자동 결정한다.
-    '오차율'이 들어간 컬럼은 %, '기온'이 들어간 컬럼은 소수 1자리+℃, 나머지는 천단위 콤마."""
+    '오차율' 또는 'MAPE'가 들어간 컬럼은 %, '기온'이 들어간 컬럼은 소수 1자리+℃, 나머지는 천단위 콤마."""
     fmt = {}
     for c in df.columns:
         if c == x_col:
             continue
-        if '오차율' in c:
+        if '오차율' in c or 'MAPE' in c:
             fmt[c] = "{:.1f}%"
         elif '기온' in c:
             fmt[c] = "{:.1f}℃"
@@ -473,7 +473,7 @@ def _dynamic_fmt(df, x_col):
 
 
 def _apply_mae_toggle(df, x_col, use_abs):
-    """use_abs=True면 '차이'/'오차율' 컬럼을 절대값으로 바꾸고, '차이' 컬럼명은 'MAE'로 바꿔 표시한다."""
+    """use_abs=True면 '차이'/'오차율' 컬럼을 절대값으로 바꾸고, '차이'→'MAE', '오차율(%)'→'MAPE(%)'로 표시한다."""
     if not use_abs:
         return df
     out = df.copy()
@@ -486,6 +486,7 @@ def _apply_mae_toggle(df, x_col, use_abs):
             rename_map[c] = c.replace('차이', 'MAE')
         elif '오차율' in c:
             out[c] = out[c].abs()
+            rename_map[c] = c.replace('오차율(%)', 'MAPE(%)')
     if rename_map:
         out = out.rename(columns=rename_map)
     return out
@@ -561,7 +562,7 @@ def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_pref
         if use_mae:
             out[f'{c}_{label}대비MAE'] = pd.Series(monthly_diff[c], index=tmp.index).abs() \
                 .groupby(tmp['Year']).mean().values
-            out[f'{c}_{label}대비오차율(%)'] = pd.Series(monthly_pct[c], index=tmp.index).abs() \
+            out[f'{c}_{label}대비MAPE(%)'] = pd.Series(monthly_pct[c], index=tmp.index).abs() \
                 .groupby(tmp['Year']).mean().values
         else:
             diff_val = yearly_raw[c] - yearly_raw[target_col]
