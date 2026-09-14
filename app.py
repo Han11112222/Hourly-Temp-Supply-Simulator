@@ -491,6 +491,19 @@ def _apply_mae_toggle(df, x_col, use_abs):
     return out
 
 
+def _ensure_baseline_cols(selected, target_col, plan_col='판매량_계획', has_plan=False):
+    """
+    표에는 사용자가 멀티선택에서 빼더라도 '계획'과 '실적'(target_col)을 항상 맨 앞에 강제로 포함시킨다.
+    (이 둘이 빠지면 비교 기준이 없어져 차이/하이라이트가 전혀 표시되지 않기 때문)
+    순서: [판매량_계획(있으면), target_col, 그 외 선택된 예측 시리즈(선택 순서 유지)]
+    """
+    others = [c for c in selected if c not in (plan_col, target_col)]
+    result = [plan_col] if has_plan else []
+    result.append(target_col)
+    result += others
+    return result
+
+
 def render_diff_table(df, x_col, target_col=None, key_prefix="tbl"):
     """
     비교표 렌더링 공통 헬퍼.
@@ -724,12 +737,14 @@ ${poly_eq_str(cs, isu)}$
         st.info("표시할 항목을 1개 이상 선택해주세요. 우선 전체 항목을 표시합니다.")
         selected_eval = all_series_eval
 
+    table_series_eval = _ensure_baseline_cols(selected_eval, TARGET, has_plan=has_plan_eval)
+
     yearly_agg_eval = monthly_eval_c.groupby('Year')[all_series_eval].sum().reset_index()
-    yearly_table_eval = _build_diff_table(yearly_agg_eval, 'Year', TARGET, selected_eval)
+    yearly_table_eval = _build_diff_table(yearly_agg_eval, 'Year', TARGET, table_series_eval)
     st.markdown("**📆 연도별 실적 대비 차이 요약**")
     render_diff_table(yearly_table_eval, 'Year', target_col=TARGET, key_prefix="eval_yearly")
 
-    monthly_table_eval = _build_diff_table(monthly_eval_c, 'Year_Month', TARGET, selected_eval)
+    monthly_table_eval = _build_diff_table(monthly_eval_c, 'Year_Month', TARGET, table_series_eval)
     st.markdown("**🗂️ 월별 상세 비교**")
     render_diff_table(monthly_table_eval, 'Year_Month', target_col=TARGET, key_prefix="eval_monthly")
 
@@ -796,12 +811,14 @@ ${poly_eq_str(cs, isu)}$
             selected_fut = agg_cols_fut
 
         future_target_col = TARGET if has_actual else '예측_판매량_v3'
+        table_series_fut = _ensure_baseline_cols(selected_fut, future_target_col, has_plan=has_plan_future)
+
         yearly_future_c = future_df_c.groupby('Year')[agg_cols_fut].sum().reset_index()
-        yearly_future_c = _build_diff_table(yearly_future_c, 'Year', future_target_col, selected_fut)
+        yearly_future_c = _build_diff_table(yearly_future_c, 'Year', future_target_col, table_series_fut)
         st.markdown("**📆 연도별 시나리오 합산**")
         render_diff_table(yearly_future_c, 'Year', target_col=future_target_col, key_prefix="future_yearly")
 
-        show_cols = ['Year_Month', '검침기온'] + selected_fut
+        show_cols = ['Year_Month', '검침기온'] + table_series_fut
         disp_future = future_df_c[show_cols].rename(columns={'검침기온': '예측기온'})
         st.markdown("**🗂️ 월별 시나리오**")
         render_diff_table(disp_future, 'Year_Month',
