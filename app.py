@@ -754,6 +754,11 @@ ${poly_eq_str(cs, isu)}$
     eval_df_c['예측_판매량_v1'] = model_base.predict(eval_df_c[['검침기온']])
     eval_df_c['예측_판매량_v3'] = predict_piecewise_seasonal(models_final, eval_df_c['검침기온'].values)
 
+    has_plan_eval = False
+    if plan_df is not None:
+        eval_df_c = eval_df_c.merge(plan_df, on=['Year', 'Month'], how='left')
+        has_plan_eval = eval_df_c['판매량_계획'].notna().any()
+
     valid_eval = eval_df_c['예측_판매량_v3'].notna()
     r2_base_eval = r2_score(eval_df_c.loc[valid_eval, TARGET], eval_df_c.loc[valid_eval, '예측_판매량_v1'])
     mae_base_eval = np.mean(np.abs(eval_df_c.loc[valid_eval, '예측_판매량_v1'] - eval_df_c.loc[valid_eval, TARGET]))
@@ -766,37 +771,39 @@ ${poly_eq_str(cs, isu)}$
         r2_cubic_eval = r2_score(eval_df_c.loc[valid_eval, TARGET], eval_df_c.loc[valid_eval, '예측_판매량_v2'])
         mae_cubic_eval = np.mean(np.abs(eval_df_c.loc[valid_eval, '예측_판매량_v2'] - eval_df_c.loc[valid_eval, TARGET]))
 
+    # 기존 계획(판매량_계획) 자체도 실적과 비교해 R²/MAE 산출 — "새 예측방식이 계획보다 나은가"를 바로 보여주기 위함
+    if has_plan_eval:
+        valid_plan_eval = valid_eval & eval_df_c['판매량_계획'].notna()
+        r2_plan_eval = r2_score(eval_df_c.loc[valid_plan_eval, TARGET], eval_df_c.loc[valid_plan_eval, '판매량_계획'])
+        mae_plan_eval = np.mean(np.abs(eval_df_c.loc[valid_plan_eval, '판매량_계획'] - eval_df_c.loc[valid_plan_eval, TARGET]))
+
     monthly_eval_c = eval_df_c[['Year_Month', 'Year', 'Month', TARGET, '예측_판매량_v1', '예측_판매량_v3']].copy()
     if has_cubic_split:
         monthly_eval_c['예측_판매량_v2'] = eval_df_c['예측_판매량_v2']
-
-    has_plan_eval = False
-    if plan_df is not None:
-        monthly_eval_c = monthly_eval_c.merge(plan_df, on=['Year', 'Month'], how='left')
-        has_plan_eval = monthly_eval_c['판매량_계획'].notna().any()
+    if has_plan_eval:
+        monthly_eval_c['판매량_계획'] = eval_df_c['판매량_계획']
 
     all_series_eval = (['판매량_계획'] if has_plan_eval else []) + [TARGET, '예측_판매량_v1'] \
         + (['예측_판매량_v2'] if has_cubic_split else []) + ['예측_판매량_v3']
 
-    # MAE가 가장 낮은(=가장 적합한) 모델에 자동으로 ✅ 표시
-    mae_by_model = {"기존 단일 3차식": mae_base_eval, "분리·2차식": mae_final_eval}
+    # R²/MAE 카드 목록 구성 — MAE가 가장 낮은 카드에 자동으로 ✅ 표시
+    metrics = []
+    if has_plan_eval:
+        metrics.append({"key": "plan", "label": "기존 계획(판매량_계획)", "r2": r2_plan_eval,
+                        "mae": mae_plan_eval, "delta": None})
+    metrics.append({"key": "base", "label": "기존 단일 3차식", "r2": r2_base_eval,
+                    "mae": mae_base_eval, "delta": None})
     if has_cubic_split:
-        mae_by_model["분리·3차식 (참고)"] = mae_cubic_eval
-    best_label = min(mae_by_model, key=mae_by_model.get)
-    label_base = "✅ 기존 단일 3차식" if best_label == "기존 단일 3차식" else "기존 단일 3차식"
-    label_cubic = "✅ 분리·3차식 (참고)" if best_label == "분리·3차식 (참고)" else "분리·3차식 (참고)"
-    label_final = "✅ 분리·2차식" if best_label == "분리·2차식" else "분리·2차식"
+        metrics.append({"key": "cubic", "label": "분리·3차식 (참고)", "r2": r2_cubic_eval,
+                        "mae": mae_cubic_eval, "delta": r2_cubic_eval - r2_base_eval})
+    metrics.append({"key": "final", "label": "분리·2차식", "r2": r2_final_eval,
+                    "mae": mae_final_eval, "delta": r2_final_eval - r2_base_eval})
 
-    mcols = st.columns(3 if has_cubic_split else 2)
-    render_r2_mae_card(mcols[0], label_base, r2_base_eval, mae_base_eval)
-    if has_cubic_split:
-        render_r2_mae_card(mcols[1], label_cubic, r2_cubic_eval, mae_cubic_eval,
-                           delta_r2=r2_cubic_eval - r2_base_eval)
-        render_r2_mae_card(mcols[2], label_final, r2_final_eval, mae_final_eval,
-                           delta_r2=r2_final_eval - r2_base_eval)
-    else:
-        render_r2_mae_card(mcols[1], label_final, r2_final_eval, mae_final_eval,
-                           delta_r2=r2_final_eval - r2_base_eval)
+    best_i = min(range(len(metrics)), key=lambda i: metrics[i]["mae"])
+    mcols = st.columns(len(metrics))
+    for i, m in enumerate(metrics):
+        label = f'✅ {m["label"]}' if i == best_i else m["label"]
+        render_r2_mae_card(mcols[i], label, m["r2"], m["mae"], delta_r2=m["delta"])
 
     # 차트는 항상 전체 시리즈 표시 — 플롯리 자체 범례 클릭으로 라인 표시/숨김
     render_line_chart(monthly_eval_c, 'Year_Month', all_series_eval, height=420)
