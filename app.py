@@ -25,11 +25,12 @@ LINE_COLORS = {
     '실제_공급량합계':     "#1f4e9c",
     '방법1_예측(정밀)':    "#2ecc71",
     '방법2_예측(단순)':    "#f39c12",
-    '판매량_실적':       "#1f4e9c",
+    '판매량_실적':       "#dc2626",
     '예측_판매량_v1':         "#66b2ff",
-    '예측_판매량_v2':      "#e74c3c",
+    '예측_판매량_v2':      "#f39c12",
     '예측_판매량_v3':      "#8e44ad",
     '판매량_계획':         "#f1948a",
+    '검침기온':           "#059669",
 }
 
 SERIES_LABELS = {
@@ -42,11 +43,13 @@ SERIES_LABELS = {
 
 
 
-def render_line_chart(df, x_col, y_cols, height=420, title=None):
+def render_line_chart(df, x_col, y_cols, height=420, title=None,
+                      secondary_col=None, secondary_name=None, secondary_suffix="℃"):
     """
     범례를 클릭하면 해당 라인을 껐다 켰다 할 수 있는 인터랙티브 라인차트.
     df: x_col을 포함한 DataFrame (set_index 하지 않은 상태로 전달)
     y_cols: 그릴 컬럼 이름 리스트 (df에 없는 컬럼은 자동으로 건너뜀)
+    secondary_col: 우측 보조축(예: 기온)에 점선으로 추가할 컬럼 (선택)
     """
     fig = go.Figure()
     for col in y_cols:
@@ -57,14 +60,28 @@ def render_line_chart(df, x_col, y_cols, height=420, title=None):
             line=dict(color=LINE_COLORS.get(col), width=2.2),
             marker=dict(size=5),
         ))
+    has_secondary = secondary_col is not None and secondary_col in df.columns
+    if has_secondary:
+        fig.add_trace(go.Scatter(
+            x=df[x_col], y=df[secondary_col], mode="lines+markers",
+            name=secondary_name or secondary_col,
+            line=dict(color=LINE_COLORS.get(secondary_col, "#059669"), width=2, dash="dot"),
+            marker=dict(size=5, symbol="diamond"),
+            yaxis="y2",
+        ))
     layout_kwargs = dict(
         height=height,
-        margin=dict(t=40 if title else 10, b=10, l=50, r=20),
+        margin=dict(t=40 if title else 10, b=10, l=50, r=50 if has_secondary else 20),
         hovermode="x unified",
         yaxis=dict(rangemode="tozero", tickformat=","),
         legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
     )
+    if has_secondary:
+        layout_kwargs["yaxis2"] = dict(
+            overlaying="y", side="right", showgrid=False,
+            ticksuffix=secondary_suffix, title=None,
+        )
     if title:  # title=None을 그대로 넘기면 프론트엔드에서 "undefined"로 표시되는 문제 방지
         layout_kwargs["title"] = title
     fig.update_layout(**layout_kwargs)
@@ -510,6 +527,8 @@ def render_diff_table(df, x_col, target_col=None, key_prefix="tbl"):
     비교표 렌더링 공통 헬퍼.
     - 좌측 상단에 'MAE 변환' 토글(체크박스)을 두고, 켜면 차이 컬럼을 절대값(MAE 스타일)으로 표시
     - x_col(구분 열)과 target_col(실적 등 기준 열)에 배경색 하이라이트 적용
+    - 컬럼명에 줄바꿈(\\n)이 들어간 긴 헤더(예: '예측_판매량_v1\\n실적대비MAPE(%)')는
+      2줄로 감싸 표시되고, 모든 컬럼 폭을 동일하게 맞춘다.
     """
     use_mae = st.checkbox("📌 차이를 절대값(MAE)으로 표시", key=f"{key_prefix}_mae_toggle")
     disp = _apply_mae_toggle(df, x_col, use_mae)
@@ -518,7 +537,8 @@ def render_diff_table(df, x_col, target_col=None, key_prefix="tbl"):
     styler = styler.set_properties(subset=[x_col], **{'background-color': '#eef2f7', 'font-weight': '600'})
     if target_col and target_col in disp.columns:
         styler = styler.set_properties(subset=[target_col], **{'background-color': '#dbeafe', 'font-weight': '600'})
-    st.dataframe(styler, use_container_width=True, hide_index=True)
+    col_config = {c: st.column_config.Column(width="small") for c in disp.columns}
+    st.dataframe(styler, use_container_width=True, hide_index=True, column_config=col_config)
 
 
 def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_prefix="tbl", target_label=None):
@@ -560,15 +580,15 @@ def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_pref
 
     def add_diff(c):
         if use_mae:
-            out[f'{c}_{label}대비MAE'] = pd.Series(monthly_diff[c], index=tmp.index).abs() \
+            out[f'{c}\n{label}대비MAE'] = pd.Series(monthly_diff[c], index=tmp.index).abs() \
                 .groupby(tmp['Year']).mean().values
-            out[f'{c}_{label}대비MAPE(%)'] = pd.Series(monthly_pct[c], index=tmp.index).abs() \
+            out[f'{c}\n{label}대비MAPE(%)'] = pd.Series(monthly_pct[c], index=tmp.index).abs() \
                 .groupby(tmp['Year']).mean().values
         else:
             diff_val = yearly_raw[c] - yearly_raw[target_col]
-            out[f'{c}_{label}대비차이'] = diff_val
+            out[f'{c}\n{label}대비차이'] = diff_val
             with np.errstate(divide='ignore', invalid='ignore'):
-                out[f'{c}_{label}대비오차율(%)'] = np.where(
+                out[f'{c}\n{label}대비오차율(%)'] = np.where(
                     yearly_raw[target_col] != 0, diff_val / yearly_raw[target_col] * 100, np.nan)
 
     for c in cols:
@@ -590,7 +610,8 @@ def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_pref
     styler = styler.set_properties(subset=['Year'], **{'background-color': '#eef2f7', 'font-weight': '600'})
     if target_col in out.columns:
         styler = styler.set_properties(subset=[target_col], **{'background-color': '#dbeafe', 'font-weight': '600'})
-    st.dataframe(styler, use_container_width=True, hide_index=True)
+    col_config = {c: st.column_config.Column(width="small") for c in out.columns}
+    st.dataframe(styler, use_container_width=True, hide_index=True, column_config=col_config)
     return out
 
 
@@ -613,10 +634,10 @@ def _build_diff_table(df, x_col, target_col, selected_cols, target_label=None):
     target_seen = False
 
     def _add_diff(colname):
-        out[f'{colname}_{label}대비차이'] = df[colname] - df[target_col]
+        out[f'{colname}\n{label}대비차이'] = df[colname] - df[target_col]
         with np.errstate(divide='ignore', invalid='ignore'):
-            out[f'{colname}_{label}대비오차율(%)'] = np.where(
-                df[target_col] != 0, out[f'{colname}_{label}대비차이'] / df[target_col] * 100, np.nan)
+            out[f'{colname}\n{label}대비오차율(%)'] = np.where(
+                df[target_col] != 0, out[f'{colname}\n{label}대비차이'] / df[target_col] * 100, np.nan)
 
     for c in cols:
         out[c] = df[c]
@@ -777,7 +798,7 @@ ${poly_eq_str(cs, isu)}$
         r2_plan_eval = r2_score(eval_df_c.loc[valid_plan_eval, TARGET], eval_df_c.loc[valid_plan_eval, '판매량_계획'])
         mae_plan_eval = np.mean(np.abs(eval_df_c.loc[valid_plan_eval, '판매량_계획'] - eval_df_c.loc[valid_plan_eval, TARGET]))
 
-    monthly_eval_c = eval_df_c[['Year_Month', 'Year', 'Month', TARGET, '예측_판매량_v1', '예측_판매량_v3']].copy()
+    monthly_eval_c = eval_df_c[['Year_Month', 'Year', 'Month', TARGET, '예측_판매량_v1', '예측_판매량_v3', '검침기온']].copy()
     if has_cubic_split:
         monthly_eval_c['예측_판매량_v2'] = eval_df_c['예측_판매량_v2']
     if has_plan_eval:
@@ -806,7 +827,10 @@ ${poly_eq_str(cs, isu)}$
         render_r2_mae_card(mcols[i], label, m["r2"], m["mae"], delta_r2=m["delta"])
 
     # 차트는 항상 전체 시리즈 표시 — 플롯리 자체 범례 클릭으로 라인 표시/숨김
-    render_line_chart(monthly_eval_c, 'Year_Month', all_series_eval, height=420)
+    show_temp_eval = st.checkbox("🌡️ 실제기온(전월16일부터 당월15일까지) 표시", key="eval_show_temp")
+    render_line_chart(monthly_eval_c, 'Year_Month', all_series_eval, height=420,
+                      secondary_col='검침기온' if show_temp_eval else None,
+                      secondary_name='실제기온(℃)')
 
     # 아래 선택 위젯은 표(연도별/월별)에만 반영됨 (차트에는 영향 없음)
     st.markdown("**📌 표에 표시할 항목 선택** (아래 연도별·월별 표에만 반영됩니다)")
@@ -877,7 +901,10 @@ ${poly_eq_str(cs, isu)}$
             + ['예측_판매량_v1'] + (['예측_판매량_v2'] if has_cubic_split else []) + ['예측_판매량_v3']
 
         # 차트는 항상 전체 시리즈 표시 — 플롯리 자체 범례 클릭으로 라인 표시/숨김
-        render_line_chart(future_df_c, 'Year_Month', agg_cols_fut, height=420)
+        show_temp_fut = st.checkbox("🌡️ 예측기온(전월16일부터 당월15일까지) 표시", key="future_show_temp")
+        render_line_chart(future_df_c, 'Year_Month', agg_cols_fut, height=420,
+                          secondary_col='검침기온' if show_temp_fut else None,
+                          secondary_name='예측기온(℃)')
 
         # 아래 선택 위젯은 표(연도별/월별)에만 반영됨 (차트에는 영향 없음)
         st.markdown("**📌 표에 표시할 항목 선택** (아래 연도별·월별 표에만 반영됩니다)")
