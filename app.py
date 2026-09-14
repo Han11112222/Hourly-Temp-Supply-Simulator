@@ -82,9 +82,10 @@ def render_r2_mae_card(col, label, r2, mae, delta_r2=None):
                       f'{arrow} {sign}{delta_r2:.4f}</div>')
     col.markdown(f"""
 <div style="font-size:0.8rem;color:#666;margin-bottom:2px;">{label}</div>
-<div style="display:flex;align-items:baseline;gap:1rem;flex-wrap:wrap;">
+<div style="display:flex;align-items:baseline;gap:0.6rem;flex-wrap:wrap;">
   <span style="font-size:1.9rem;font-weight:700;color:#1f2937;">{r2:.4f}</span>
-  <span style="font-size:1.9rem;font-weight:700;color:#1f2937;">MAE {mae:,.0f}</span>
+  <span style="font-size:1.9rem;font-weight:700;color:#166534;background-color:#dcfce7;
+               padding:0.05em 0.4em;border-radius:0.4em;">MAE {mae:,.0f}</span>
 </div>
 {delta_html}
 """, unsafe_allow_html=True)
