@@ -26,8 +26,10 @@ LINE_COLORS = {
     '냉방용_판매량':       "#1f4e9c",
     '예측_판매량':         "#66b2ff",
     '예측_판매량_v2':      "#e74c3c",
+    '예측_판매량_v3':      "#8e44ad",
     '판매량_계획':         "#f1948a",
 }
+
 
 
 def render_line_chart(df, x_col, y_cols, height=420, title=None):
@@ -45,15 +47,17 @@ def render_line_chart(df, x_col, y_cols, height=420, title=None):
             line=dict(color=LINE_COLORS.get(col), width=2.2),
             marker=dict(size=5),
         ))
-    fig.update_layout(
+    layout_kwargs = dict(
         height=height,
         margin=dict(t=40 if title else 10, b=10, l=50, r=20),
-        title=title,
         hovermode="x unified",
         yaxis=dict(rangemode="tozero", tickformat=","),
         legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
     )
+    if title:  # title=None을 그대로 넘기면 프론트엔드에서 "undefined"로 표시되는 문제 방지
+        layout_kwargs["title"] = title
+    fig.update_layout(**layout_kwargs)
     st.plotly_chart(fig, use_container_width=True, config=dict(displaylogo=False))
 
 
@@ -405,6 +409,23 @@ def predict_piecewise_seasonal(models, x_values):
     return preds
 
 
+def poly_eq_str(coefs, intercept):
+    """
+    PolynomialFeatures(degree=n, include_bias=False) 계수 배열(coefs, 오름차순: x, x², x³...)과
+    절편(intercept)을 받아 차수에 상관없이 "y = ax^n + ... + c" 형태 문자열을 만든다.
+    """
+    n = len(coefs)
+    parts = []
+    for power in range(n, 0, -1):
+        c = coefs[power - 1]
+        parts.append(f"{c:+.2f}x^{power}" if power > 1 else f"{c:+.2f}x")
+    parts.append(f"{intercept:+.0f}")
+    eq = " ".join(parts)
+    if eq.startswith("+"):
+        eq = eq[1:]
+    return f"y = {eq}"
+
+
 def render_cooling_analysis():
     st.header("🧊 [Part 3] 냉방용 사용량 분석 — 검침기간 평균기온 (전월16일~당월15일)")
     st.markdown(
@@ -621,6 +642,108 @@ $y = {cs[2]:.2f}x^3 {cs[1]:+.2f}x^2 {cs[0]:+.2f}x {isu:+.0f}$
         st.download_button("📥 Ver2 과거 적합도 검증 리포트 다운로드", data=csv_eval_v2,
                            file_name="냉방용_Ver2_과거적합도_검증리포트.csv", mime="text/csv")
 
+    # ══════════════════════════════════════════
+    # Ver3. 동절기/하절기 분리 (2차식) — 하절기 표본 부족(n≈17)으로 인한
+    # 3차식 과적합/불안정을 줄이기 위해 차수를 2차로 낮춘 버전
+    # ══════════════════════════════════════════
+    st.markdown("---")
+    st.header("🆕 Ver3. 동절기/하절기 분리 — 2차식 (저표본 안정화)")
+    st.markdown(
+        "Ver2의 하절기 모델은 학습 표본이 적어(n≈17) 3차식(파라미터 4개) 특성상 계수가 "
+        "불안정해지고 R²가 낮게 나올 수 있습니다. Ver3는 동절기·하절기 모두 **2차식**(파라미터 3개)으로 "
+        "낮춰 과적합 위험을 줄이고 예측을 더 안정화합니다. 구간 분리·보간 방식은 Ver2와 동일합니다."
+    )
+
+    models_v3, winter_data_v3, summer_data_v3 = fit_piecewise_seasonal_models(
+        train_df_c, x_col='검침기온', y_col=TARGET, degree=2)
+
+    if models_v3['winter'] is None or models_v3['summer'] is None:
+        st.warning(
+            f"동절기(≤{WINTER_T:.0f}℃, n={len(winter_data_v3)}) 또는 "
+            f"하절기(≥{SUMMER_T:.0f}℃, n={len(summer_data_v3)}) 학습 데이터가 3건 미만이라 "
+            "Ver3 모델을 만들 수 없습니다. 학습 연도를 늘려주세요."
+        )
+    else:
+        cw3 = models_v3['winter'].named_steps['linearregression'].coef_
+        iw3 = models_v3['winter'].named_steps['linearregression'].intercept_
+        cs3 = models_v3['summer'].named_steps['linearregression'].coef_
+        isu3 = models_v3['summer'].named_steps['linearregression'].intercept_
+        r2_w3 = r2_score(winter_data_v3[TARGET], models_v3['winter'].predict(winter_data_v3[['검침기온']]))
+        r2_s3 = r2_score(summer_data_v3[TARGET], models_v3['summer'].predict(summer_data_v3[['검침기온']]))
+
+        col_w3, col_s3 = st.columns(2)
+        with col_w3:
+            st.info(f"""
+**❄️ 동절기 모델 (검침기온 ≤ {WINTER_T:.0f}℃, n={len(winter_data_v3)}, 2차식)**
+
+학습 R² = {r2_w3 * 100:.2f}%
+
+${poly_eq_str(cw3, iw3)}$
+""")
+        with col_s3:
+            st.info(f"""
+**☀️ 하절기 모델 (검침기온 ≥ {SUMMER_T:.0f}℃, n={len(summer_data_v3)}, 2차식)**
+
+학습 R² = {r2_s3 * 100:.2f}%
+
+${poly_eq_str(cs3, isu3)}$
+""")
+        st.caption(f"※ {WINTER_T:.0f}~{SUMMER_T:.0f}℃ 구간은 두 모델의 경계값을 선형보간하여 연결(중복계상 방지)")
+
+        # ── Ver1 vs Ver2 vs Ver3 과거 적합도 비교 ──
+        eval_df_c['예측_판매량_v3'] = predict_piecewise_seasonal(models_v3, eval_df_c['검침기온'].values)
+        valid_v3 = eval_df_c['예측_판매량_v3'].notna()
+        r2_v1_e = r2_score(eval_df_c.loc[valid_v3, TARGET], eval_df_c.loc[valid_v3, '예측_판매량'])
+        r2_v3_e = r2_score(eval_df_c.loc[valid_v3, TARGET], eval_df_c.loc[valid_v3, '예측_판매량_v3'])
+        mae_v1_e = np.mean(np.abs(eval_df_c.loc[valid_v3, '예측_판매량'] - eval_df_c.loc[valid_v3, TARGET]))
+        mae_v3_e = np.mean(np.abs(eval_df_c.loc[valid_v3, '예측_판매량_v3'] - eval_df_c.loc[valid_v3, TARGET]))
+        has_v2_col = '예측_판매량_v2' in eval_df_c.columns and eval_df_c['예측_판매량_v2'].notna().any()
+        if has_v2_col:
+            r2_v2_e = r2_score(eval_df_c.loc[valid_v3, TARGET], eval_df_c.loc[valid_v3, '예측_판매량_v2'])
+            mae_v2_e = np.mean(np.abs(eval_df_c.loc[valid_v3, '예측_판매량_v2'] - eval_df_c.loc[valid_v3, TARGET]))
+
+        mcols = st.columns(3 if has_v2_col else 2)
+        mcols[0].metric("Ver1 (단일 3차식) R²", f"{r2_v1_e:.4f}", delta=f"MAE {mae_v1_e:,.0f}")
+        if has_v2_col:
+            mcols[1].metric("Ver2 (분리·3차식) R²", f"{r2_v2_e:.4f}",
+                            delta=f"{r2_v2_e - r2_v1_e:+.4f} (MAE {mae_v2_e:,.0f})")
+            mcols[2].metric("Ver3 (분리·2차식) R²", f"{r2_v3_e:.4f}",
+                            delta=f"{r2_v3_e - r2_v1_e:+.4f} (MAE {mae_v3_e:,.0f})")
+        else:
+            mcols[1].metric("Ver3 (분리·2차식) R²", f"{r2_v3_e:.4f}",
+                            delta=f"{r2_v3_e - r2_v1_e:+.4f} (MAE {mae_v3_e:,.0f})")
+
+        monthly_eval_v3 = eval_df_c[['Year_Month', TARGET, '예측_판매량', '예측_판매량_v3']].copy()
+        if has_v2_col:
+            monthly_eval_v3['예측_판매량_v2'] = eval_df_c['예측_판매량_v2']
+        monthly_eval_v3['Ver3_차이'] = monthly_eval_v3['예측_판매량_v3'] - monthly_eval_v3[TARGET]
+        monthly_eval_v3['Ver3_오차율(%)'] = (monthly_eval_v3['Ver3_차이'] / monthly_eval_v3[TARGET]) * 100
+        if has_plan_eval:
+            monthly_eval_v3 = monthly_eval_v3.merge(
+                monthly_eval_c[['Year_Month', '판매량_계획']], on='Year_Month', how='left')
+
+        chart_cols_v3 = [TARGET, '예측_판매량'] + (['예측_판매량_v2'] if has_v2_col else []) \
+            + ['예측_판매량_v3'] + (['판매량_계획'] if has_plan_eval else [])
+        render_line_chart(monthly_eval_v3, 'Year_Month', chart_cols_v3, height=420)
+        st.caption("🟦 실적 · 🟨 예측_판매량(Ver1) " + ("· 🟥 예측_판매량_v2(Ver2) " if has_v2_col else "")
+                   + "· 🟪 예측_판매량_v3(Ver3 2차식)"
+                   + (" · 🌸 판매량_계획" if has_plan_eval else "") + " — 범례 클릭 시 라인 표시/숨김")
+
+        fmt_v3 = {TARGET: "{:,.0f}", '예측_판매량': "{:,.0f}", '예측_판매량_v2': "{:,.0f}",
+                  '예측_판매량_v3': "{:,.0f}", 'Ver3_차이': "{:,.0f}", 'Ver3_오차율(%)': "{:.1f}%",
+                  '판매량_계획': "{:,.0f}"}
+        v3_show_cols = ['Year_Month', TARGET, '예측_판매량'] + (['예측_판매량_v2'] if has_v2_col else []) \
+            + ['예측_판매량_v3', 'Ver3_차이', 'Ver3_오차율(%)']
+        if has_plan_eval:
+            v3_show_cols += ['판매량_계획']
+        st.markdown("**🗂️ 월별 Ver1 vs Ver2 vs Ver3 비교**")
+        st.dataframe(monthly_eval_v3[v3_show_cols].style.format(fmt_v3, na_rep='-'),
+                     use_container_width=True, hide_index=True)
+
+        csv_eval_v3 = monthly_eval_v3[v3_show_cols].to_csv(index=False).encode('utf-8-sig')
+        st.download_button("📥 Ver3 과거 적합도 검증 리포트 다운로드", data=csv_eval_v3,
+                           file_name="냉방용_Ver3_과거적합도_검증리포트.csv", mime="text/csv")
+
     # ── Part 2: 미래 시나리오 ──
     st.markdown("---")
     st.subheader("🔮 미래 냉방용 판매량 추정 시나리오")
@@ -724,6 +847,37 @@ $y = {cs[2]:.2f}x^3 {cs[1]:+.2f}x^2 {cs[0]:+.2f}x {isu:+.0f}$
             csv_future_v2 = future_df_c[v2_fut_cols].to_csv(index=False).encode('utf-8-sig')
             st.download_button("📥 Ver2 미래 시나리오 다운로드", data=csv_future_v2,
                                file_name="냉방용_Ver2_미래시나리오.csv", mime="text/csv")
+
+        # ── Ver3 미래 시나리오 (동절기/하절기 분리, 2차식) ──
+        if models_v3['winter'] is not None and models_v3['summer'] is not None:
+            st.markdown("---")
+            st.markdown("**🆕 Ver3 미래 시나리오 (동절기/하절기 분리, 2차식)**")
+
+            future_df_c['예측_판매량_v3'] = predict_piecewise_seasonal(
+                models_v3, future_df_c['검침기온'].values)
+
+            has_v2_fut_col = '예측_판매량_v2' in future_df_c.columns and future_df_c['예측_판매량_v2'].notna().any()
+            chart_cols_v3_fut = ['예측_판매량'] + (['예측_판매량_v2'] if has_v2_fut_col else []) \
+                + ['예측_판매량_v3'] + ([TARGET] if has_actual else []) + (['판매량_계획'] if has_plan_future else [])
+            render_line_chart(future_df_c, 'Year_Month', chart_cols_v3_fut, height=420)
+            st.caption("🟨 예측_판매량(Ver1) " + ("· 🟥 예측_판매량_v2(Ver2) " if has_v2_fut_col else "")
+                       + "· 🟪 예측_판매량_v3(Ver3 2차식)"
+                       + (" · 🟦 실적" if has_actual else "") + (" · 🌸 판매량_계획" if has_plan_future else "")
+                       + " — 범례 클릭 시 라인 표시/숨김")
+
+            v3_fut_cols = ['Year_Month', '검침기온', '예측_판매량'] \
+                + (['예측_판매량_v2'] if has_v2_fut_col else []) + ['예측_판매량_v3']
+            if has_actual:
+                v3_fut_cols.append(TARGET)
+            if has_plan_future:
+                v3_fut_cols.append('판매량_계획')
+            fmt_v3_fut = {**fmt_fc, '예측_판매량_v2': "{:,.0f}", '예측_판매량_v3': "{:,.0f}"}
+            st.dataframe(future_df_c[v3_fut_cols].style.format(fmt_v3_fut, na_rep='-'),
+                         use_container_width=True, hide_index=True)
+
+            csv_future_v3 = future_df_c[v3_fut_cols].to_csv(index=False).encode('utf-8-sig')
+            st.download_button("📥 Ver3 미래 시나리오 다운로드", data=csv_future_v3,
+                               file_name="냉방용_Ver3_미래시나리오.csv", mime="text/csv")
     else:
         st.info("좌측에서 미래 시나리오 추정 연도를 선택하면 결과가 표시됩니다.")
 
