@@ -178,15 +178,273 @@ def load_and_preprocess_heating_data(monthly_temp_df):
 
 
 # ==========================================
+# [신규] 3. 냉방용 사용량 분석
+#   - 기온: 일별 기온 시트 → 검침기간(전월16일~당월15일) 평균 (일평균기온 기준, 시간대별 정밀 방식 아님)
+#   - 판매량: 판매량 실적 시트 '냉방용' 컬럼
+#   - 모델: 검침기온 → 냉방용 판매량, 3차 다항식(Poly-3) 단일 모델
+# ==========================================
+
+SALES_SHEET_URL = "https://docs.google.com/spreadsheets/d/1-8RIPIkjnVXxoh5QJs6598nnHkWOGmrO655jr3b3g04/export?format=csv&gid=0"
+
+
+@st.cache_data
+def load_daily_temp_for_cooling():
+    """
+    구글시트(13HrIz6O...)의 일자 단위 원본 기온을 그대로 로드한다.
+    (load_monthly_avg_temp()는 이미 월평균으로 뭉개버리므로,
+     검침기간 전월16~당월15 계산을 위해 일자 단위로 별도 로드)
+    """
+    sheet_url = "https://docs.google.com/spreadsheets/d/13HrIz6OytYDykXeXzXJ02I6XbaKin1YaKBoO2kBd6Bs/export?format=csv&gid=0"
+    try:
+        df = pd.read_csv(sheet_url)
+    except Exception as e:
+        st.error(f"❌ 일별기온 구글시트 로드 오류: {e}")
+        st.stop()
+
+    col_list = df.columns.tolist()
+    date_cols = [c for c in col_list if '날짜' in c or 'date' in c.lower() or 'Date' in c]
+    DATE_COL = date_cols[0] if date_cols else col_list[0]
+    temp_cols = [c for c in col_list if '평균기온' in c] or \
+                [c for c in col_list if '기온' in c or 'temp' in c.lower()]
+    TEMP_COL = temp_cols[0] if temp_cols else col_list[1]
+
+    df['Date'] = pd.to_datetime(df[DATE_COL], errors='coerce')
+    df = df.dropna(subset=['Date'])
+    df['Year']  = df['Date'].dt.year
+    df['Month'] = df['Date'].dt.month
+    df['Day']   = df['Date'].dt.day
+    df[TEMP_COL] = pd.to_numeric(df[TEMP_COL], errors='coerce')
+    df = df.dropna(subset=[TEMP_COL])
+    return df[['Date', 'Year', 'Month', 'Day', TEMP_COL]].rename(columns={TEMP_COL: 'Avg_Temp'})
+
+
+def compute_meter_reading_temp(daily_df):
+    """
+    검침기간 평균기온 = 전월16일~말일 + 당월1일~15일 평균 (일평균기온 기준, 정밀 시간대 아님).
+    반환: DataFrame(Year, Month, 검침기온)
+    """
+    rows = []
+    for (y, m), _ in daily_df.groupby(['Year', 'Month']):
+        cur_half = daily_df[(daily_df['Year'] == y) & (daily_df['Month'] == m) &
+                             (daily_df['Day'] <= 15)]['Avg_Temp']
+        py, pm = (y - 1, 12) if m == 1 else (y, m - 1)
+        prev_half = daily_df[(daily_df['Year'] == py) & (daily_df['Month'] == pm) &
+                              (daily_df['Day'] >= 16)]['Avg_Temp']
+        combined = pd.concat([prev_half, cur_half]).dropna()
+        if len(combined) >= 5:
+            rows.append({'Year': int(y), 'Month': int(m), '검침기온': combined.mean()})
+    return pd.DataFrame(rows)
+
+
+@st.cache_data
+def load_cooling_sales():
+    """판매량 실적 구글시트 — '냉방용' 컬럼 로드."""
+    try:
+        df = pd.read_csv(SALES_SHEET_URL)
+    except Exception as e:
+        st.error(f"❌ 판매량 구글시트 로드 오류: {e}")
+        st.stop()
+
+    col_list = df.columns.tolist()
+    cooling_col = None
+    for c in col_list:
+        if '냉방' in c:
+            cooling_col = c; break
+    if cooling_col is None:
+        st.error("판매량 시트에서 '냉방용' 컬럼을 찾을 수 없습니다.")
+        st.stop()
+
+    year_col  = '연' if '연' in col_list else ('Year' if 'Year' in col_list else col_list[1])
+    month_col = '월' if '월' in col_list else ('Month' if 'Month' in col_list else col_list[2])
+
+    out = df.rename(columns={year_col: 'Year', month_col: 'Month'})[['Year', 'Month', cooling_col]].copy()
+    out[cooling_col] = pd.to_numeric(
+        out[cooling_col].astype(str).str.replace(r'[^\d.\-]', '', regex=True), errors='coerce')
+    out['Year']  = pd.to_numeric(out['Year'], errors='coerce')
+    out['Month'] = pd.to_numeric(out['Month'], errors='coerce')
+    out = out.dropna(subset=['Year', 'Month', cooling_col])
+    out['Year']  = out['Year'].astype(int)
+    out['Month'] = out['Month'].astype(int)
+    out = out[out[cooling_col] > 0].reset_index(drop=True)
+    return out.rename(columns={cooling_col: '냉방용_판매량'})
+
+
+def render_cooling_analysis():
+    st.header("🧊 [Part 3] 냉방용 사용량 분석 — 검침기간 평균기온 (전월16일~당월15일)")
+    st.markdown(
+        "일별 기온 시트에서 **검침기간(전월16일~당월15일) 평균기온**을 계산하고, "
+        "판매량 실적 시트의 **냉방용** 판매량을 3차 다항식(Poly-3)으로 학습합니다. "
+        "(정밀 시간대별 HDD/CDD 방식이 아닌, 일평균기온 기반입니다.)"
+    )
+
+    with st.spinner("냉방용 데이터를 불러오는 중입니다..."):
+        daily_temp_df = load_daily_temp_for_cooling()
+        meter_temp_df = compute_meter_reading_temp(daily_temp_df)
+        sales_df = load_cooling_sales()
+        merged_cool = pd.merge(meter_temp_df, sales_df, on=['Year', 'Month'], how='inner')
+        merged_cool['Year_Month'] = merged_cool.apply(
+            lambda r: f"{int(r['Year'])}-{int(r['Month']):02d}", axis=1)
+
+    if merged_cool.empty:
+        st.warning("검침기온과 판매량 데이터의 겹치는 기간이 없습니다.")
+        st.stop()
+
+    TARGET = '냉방용_판매량'
+    all_years_cool = sorted(merged_cool['Year'].unique())
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**🧊 냉방용 분석 설정**")
+    train_years_c = st.sidebar.multiselect(
+        "1. AI 학습 연도 선택 (냉방용)", options=all_years_cool,
+        default=all_years_cool, key="cool_train_years")
+    eval_years_c = st.sidebar.multiselect(
+        "2. 과거 적합도 검증 연도 (냉방용)", options=all_years_cool,
+        default=all_years_cool[-2:], key="cool_eval_years")
+    max_year_c = int(merged_cool['Year'].max())
+    future_years_c = st.sidebar.multiselect(
+        "3. 미래 시나리오 추정 연도 (냉방용)",
+        options=list(range(max_year_c + 1, max_year_c + 6)),
+        default=[max_year_c + 1, max_year_c + 2], key="cool_future_years")
+    y_years_c = st.sidebar.slider(
+        "4. 미래 검침기온 추정 기준 (최근 Y년 평균, 냉방용)",
+        min_value=1, max_value=10, value=3, step=1, key="cool_y_years")
+    sim_base_years_c = list(range(max_year_c - y_years_c + 1, max_year_c + 1))
+
+    if not train_years_c or not eval_years_c:
+        st.warning("👈 좌측 패널에서 냉방용 학습/검증 연도를 선택해주세요.")
+        st.stop()
+
+    # ── 모델 학습 (Poly-3, 검침기온 → 냉방용 판매량) ──
+    train_df_c = merged_cool[merged_cool['Year'].isin(train_years_c)]
+    x_train_c = train_df_c[['검침기온']]
+    y_train_c = train_df_c[TARGET]
+
+    model_c = make_pipeline(PolynomialFeatures(degree=3, include_bias=False), LinearRegression())
+    model_c.fit(x_train_c, y_train_c)
+    coef_c = model_c.named_steps['linearregression'].coef_
+    inter_c = model_c.named_steps['linearregression'].intercept_
+    train_r2_c = r2_score(y_train_c, model_c.predict(x_train_c))
+
+    st.markdown("### 📊 냉방용 Poly-3 모델")
+    st.info(f"""
+**🎯 모델 학습 일치율 (R²): {train_r2_c * 100:.2f}%**
+
+**📉 도출된 냉방용 판매량 함수식:**
+$y = {coef_c[2]:.2f}x^3 {coef_c[1]:+.2f}x^2 {coef_c[0]:+.2f}x {inter_c:+.0f}$
+*(x = 검침기간(전월16일~당월15일) 평균기온)*
+
+👉 **기온 소스**: 구글시트 일별 기온 → 검침기간 평균 집계 (일평균기온 기준)
+👉 **판매량 소스**: 판매량 실적 시트 — 냉방용
+""")
+
+    with st.expander("🔎 검침기온 ↔ 냉방용 판매량 산점도 (학습 데이터)"):
+        st.scatter_chart(train_df_c, x='검침기온', y=TARGET, height=380)
+
+    # ── Part 1: 과거 적합도 검증 ──
+    st.subheader("📊 과거 모델 적합도 검증 (냉방용)")
+    eval_df_c = merged_cool[merged_cool['Year'].isin(eval_years_c)].copy()
+    eval_df_c['예측_판매량'] = model_c.predict(eval_df_c[['검침기온']])
+
+    monthly_eval_c = eval_df_c[['Year_Month', 'Year', TARGET, '예측_판매량']].copy()
+    monthly_eval_c['차이'] = monthly_eval_c['예측_판매량'] - monthly_eval_c[TARGET]
+    monthly_eval_c['오차율(%)'] = (monthly_eval_c['차이'] / monthly_eval_c[TARGET]) * 100
+
+    yearly_eval_c = eval_df_c.groupby('Year').agg({TARGET: 'sum', '예측_판매량': 'sum'}).reset_index()
+    yearly_eval_c['차이'] = yearly_eval_c['예측_판매량'] - yearly_eval_c[TARGET]
+    yearly_eval_c['오차율(%)'] = (yearly_eval_c['차이'] / yearly_eval_c[TARGET]) * 100
+
+    fmt_c = {TARGET: "{:,.0f}", '예측_판매량': "{:,.0f}", '차이': "{:,.0f}", '오차율(%)': "{:.1f}%"}
+
+    st.line_chart(monthly_eval_c.set_index('Year_Month')[[TARGET, '예측_판매량']],
+                  use_container_width=True, height=420)
+
+    st.markdown("**🗂️ 월별 적합도 상세**")
+    st.dataframe(monthly_eval_c[['Year_Month', TARGET, '예측_판매량', '차이', '오차율(%)']]
+                 .style.format(fmt_c, na_rep='-'), use_container_width=True, hide_index=True)
+
+    st.markdown("**📆 연도별 적합도 요약**")
+    st.dataframe(yearly_eval_c[['Year', TARGET, '예측_판매량', '차이', '오차율(%)']]
+                 .style.format(fmt_c, na_rep='-'), use_container_width=True, hide_index=True)
+
+    csv_eval_c = monthly_eval_c[['Year_Month', TARGET, '예측_판매량', '차이', '오차율(%)']] \
+        .to_csv(index=False).encode('utf-8-sig')
+    st.download_button("📥 냉방용 과거 적합도 검증 리포트 다운로드", data=csv_eval_c,
+                       file_name="냉방용_과거적합도_검증리포트.csv", mime="text/csv")
+
+    # ── Part 2: 미래 시나리오 ──
+    st.markdown("---")
+    st.subheader("🔮 미래 냉방용 판매량 추정 시나리오")
+
+    if future_years_c:
+        hist_temp_c = meter_temp_df[meter_temp_df['Year'].isin(sim_base_years_c)]
+        sim_month_temp_c = hist_temp_c.groupby('Month')['검침기온'].mean().reset_index()
+
+        future_rows = []
+        for y in future_years_c:
+            for m in range(1, 13):
+                t = sim_month_temp_c.loc[sim_month_temp_c['Month'] == m, '검침기온']
+                if len(t) > 0:
+                    future_rows.append({'Year': y, 'Month': m, '검침기온': float(t.values[0])})
+        future_df_c = pd.DataFrame(future_rows)
+        future_df_c['예측_판매량'] = model_c.predict(future_df_c[['검침기온']])
+        future_df_c['Year_Month'] = future_df_c.apply(
+            lambda r: f"{int(r['Year'])}-{int(r['Month']):02d}", axis=1)
+
+        # 실제 실적이 있으면(예: 최근 진행 중인 연도) 함께 표시
+        future_df_c = pd.merge(future_df_c, sales_df, on=['Year', 'Month'], how='left')
+        has_actual = TARGET in future_df_c.columns and future_df_c[TARGET].notna().any()
+        if has_actual:
+            future_df_c['차이'] = future_df_c['예측_판매량'] - future_df_c[TARGET]
+            future_df_c['오차율(%)'] = (future_df_c['차이'] / future_df_c[TARGET]) * 100
+
+        st.caption(f"미래 검침기온 추정: 최근 {y_years_c}개년"
+                   f"({min(sim_base_years_c)}~{max(sim_base_years_c)}) 동월 검침기온 평균 사용")
+
+        chart_cols_c = ['예측_판매량'] + ([TARGET] if has_actual else [])
+        st.line_chart(future_df_c.set_index('Year_Month')[chart_cols_c],
+                      use_container_width=True, height=420)
+
+        show_cols = ['Year_Month', '검침기온', '예측_판매량']
+        if has_actual:
+            show_cols += [TARGET, '차이', '오차율(%)']
+        fmt_fc = {**fmt_c, '검침기온': "{:.1f}℃"}
+        st.markdown("**🗂️ 월별 시나리오**")
+        st.dataframe(future_df_c[show_cols].style.format(fmt_fc, na_rep='-'),
+                     use_container_width=True, hide_index=True)
+
+        agg_cols = {'예측_판매량': 'sum'}
+        if has_actual:
+            agg_cols[TARGET] = 'sum'
+        yearly_future_c = future_df_c.groupby('Year').agg(agg_cols).reset_index()
+        if has_actual:
+            yearly_future_c['차이'] = yearly_future_c['예측_판매량'] - yearly_future_c[TARGET]
+            yearly_future_c['오차율(%)'] = (yearly_future_c['차이'] / yearly_future_c[TARGET]) * 100
+        st.markdown("**📆 연도별 시나리오 합산**")
+        st.dataframe(yearly_future_c.style.format(fmt_c, na_rep='-'),
+                     use_container_width=True, hide_index=True)
+
+        csv_future_c = future_df_c[show_cols].to_csv(index=False).encode('utf-8-sig')
+        st.download_button("📥 냉방용 미래 시나리오 다운로드", data=csv_future_c,
+                           file_name="냉방용_미래시나리오.csv", mime="text/csv")
+    else:
+        st.info("좌측에서 미래 시나리오 추정 연도를 선택하면 결과가 표시됩니다.")
+
+
+# ==========================================
 # 2. 좌측 사이드바: 컨트롤 패널
 # ==========================================
 st.sidebar.header("⚙️ 시뮬레이션 설정 패널")
 
 analysis_mode = st.sidebar.radio(
     "📊 분석 대상 선택",
-    options=["1. 전체 공급량 분석", "2. 개별난방용 공급량 분석"],
+    options=["1. 전체 공급량 분석", "2. 개별난방용 공급량 분석", "3. 냉방용 사용량 분석"],
     index=0
 )
+
+# ★ 신규 추가: 3번 선택 시 기존 파이프라인(공급량 분석)은 건드리지 않고 바로 분기
+if analysis_mode == "3. 냉방용 사용량 분석":
+    render_cooling_analysis()
+    st.stop()
 
 with st.spinner("데이터베이스를 불러오는 중입니다..."):
     monthly_temp_df = load_monthly_avg_temp()
