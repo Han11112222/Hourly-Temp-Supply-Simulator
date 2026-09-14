@@ -187,6 +187,10 @@ def load_and_preprocess_heating_data(monthly_temp_df):
 SALES_SHEET_URL = "https://docs.google.com/spreadsheets/d/1-8RIPIkjnVXxoh5QJs6598nnHkWOGmrO655jr3b3g04/export?format=csv&gid=0"
 PLAN_SHEET_URL = "https://docs.google.com/spreadsheets/d/1zu2R21_P6z6yCeWz7yX1K6IYhj541hcr3IvCAaHLEQ8/export?format=csv&gid=0"
 
+# ── Ver2(동절기/하절기 분리 모델)용 기준온도 — 기존 HDD/CDD 기준과 동일 ──
+WINTER_T = 18.0  # 검침기온 ≤ 18℃ → 동절기 모델 (HDD 기준온도)
+SUMMER_T = 26.0  # 검침기온 ≥ 26℃ → 하절기 모델 (CDD 기준온도)
+
 
 @st.cache_data
 def load_daily_temp_for_cooling():
@@ -303,6 +307,59 @@ def load_cooling_plan():
     out['Year']  = out['Year'].astype(int)
     out['Month'] = out['Month'].astype(int)
     return out.rename(columns={plan_col: '판매량_계획'})
+
+
+def fit_piecewise_seasonal_models(train_df, x_col='검침기온', y_col='냉방용_판매량', degree=3):
+    """
+    검침기온 기준 동절기(≤WINTER_T)/하절기(≥SUMMER_T) 데이터를 각각 나눠
+    별도의 다항식 모델을 학습한다. (이중계상 방지를 위해 중간구간 데이터는 학습에서 제외,
+    예측 시 18℃/26℃ 경계값을 선형보간하여 연결)
+    """
+    winter_data = train_df[train_df[x_col] <= WINTER_T]
+    summer_data = train_df[train_df[x_col] >= SUMMER_T]
+
+    models = {'winter': None, 'summer': None}
+    min_pts = degree + 1
+    if len(winter_data) >= min_pts:
+        mw = make_pipeline(PolynomialFeatures(degree=degree, include_bias=False), LinearRegression())
+        mw.fit(winter_data[[x_col]], winter_data[y_col])
+        models['winter'] = mw
+    if len(summer_data) >= min_pts:
+        ms = make_pipeline(PolynomialFeatures(degree=degree, include_bias=False), LinearRegression())
+        ms.fit(summer_data[[x_col]], summer_data[y_col])
+        models['summer'] = ms
+    return models, winter_data, summer_data
+
+
+def predict_piecewise_seasonal(models, x_values):
+    """
+    x_values(검침기온 배열)에 대해:
+      x <= WINTER_T        → 동절기 모델 예측
+      x >= SUMMER_T         → 하절기 모델 예측
+      WINTER_T < x < SUMMER_T → 두 모델의 경계값(18℃/26℃ 지점 예측)을 선형보간
+    """
+    x_arr = np.asarray(x_values, dtype=float)
+    mw, ms = models.get('winter'), models.get('summer')
+    w_at_boundary = float(mw.predict([[WINTER_T]])[0]) if mw is not None else None
+    s_at_boundary = float(ms.predict([[SUMMER_T]])[0]) if ms is not None else None
+
+    preds = np.full_like(x_arr, np.nan, dtype=float)
+    for i, x in enumerate(x_arr):
+        if np.isnan(x):
+            continue
+        if x <= WINTER_T:
+            preds[i] = float(mw.predict([[x]])[0]) if mw is not None else np.nan
+        elif x >= SUMMER_T:
+            preds[i] = float(ms.predict([[x]])[0]) if ms is not None else np.nan
+        else:
+            if w_at_boundary is not None and s_at_boundary is not None:
+                frac = (x - WINTER_T) / (SUMMER_T - WINTER_T)
+                preds[i] = w_at_boundary * (1 - frac) + s_at_boundary * frac
+            elif w_at_boundary is not None:
+                preds[i] = w_at_boundary
+            elif s_at_boundary is not None:
+                preds[i] = s_at_boundary
+    return preds
 
 
 def render_cooling_analysis():
@@ -435,6 +492,94 @@ $y = {coef_c[2]:.2f}x^3 {coef_c[1]:+.2f}x^2 {coef_c[0]:+.2f}x {inter_c:+.0f}$
     st.download_button("📥 냉방용 과거 적합도 검증 리포트 다운로드", data=csv_eval_c,
                        file_name="냉방용_과거적합도_검증리포트.csv", mime="text/csv")
 
+    # ══════════════════════════════════════════
+    # Ver2. 동절기/하절기 분리 적용 (HDD 18℃ / CDD 26℃ 기준)
+    # ══════════════════════════════════════════
+    st.markdown("---")
+    st.header("🆕 Ver2. 동절기/하절기 분리 적용 (HDD 18℃ / CDD 26℃ 기준)")
+    st.markdown(
+        f"단일 3차식(Ver1)은 겨울·여름 두 번 꺾이는 U자형 패턴을 한 곡선으로 억지로 표현하다 보니 "
+        f"양 극단(특히 하절기)에서 과대예측(overshoot)이 발생합니다. "
+        f"Ver2는 검침기온 **{WINTER_T:.0f}℃ 이하(동절기)** / **{SUMMER_T:.0f}℃ 이상(하절기)** 구간을 "
+        f"각각 별도의 3차식으로 학습하고, 두 모델 사이 구간({WINTER_T:.0f}~{SUMMER_T:.0f}℃)은 "
+        f"경계값을 선형보간해 이어 붙입니다. (동일 월을 두 모델에서 중복 예측·합산하지 않음)"
+    )
+
+    models_v2, winter_data_v2, summer_data_v2 = fit_piecewise_seasonal_models(
+        train_df_c, x_col='검침기온', y_col=TARGET, degree=3)
+
+    if models_v2['winter'] is None or models_v2['summer'] is None:
+        st.warning(
+            f"동절기(≤{WINTER_T:.0f}℃, n={len(winter_data_v2)}) 또는 "
+            f"하절기(≥{SUMMER_T:.0f}℃, n={len(summer_data_v2)}) 학습 데이터가 4건 미만이라 "
+            "Ver2 모델을 만들 수 없습니다. 학습 연도를 늘려주세요."
+        )
+    else:
+        cw = models_v2['winter'].named_steps['linearregression'].coef_
+        iw = models_v2['winter'].named_steps['linearregression'].intercept_
+        cs = models_v2['summer'].named_steps['linearregression'].coef_
+        isu = models_v2['summer'].named_steps['linearregression'].intercept_
+        r2_w = r2_score(winter_data_v2[TARGET], models_v2['winter'].predict(winter_data_v2[['검침기온']]))
+        r2_s = r2_score(summer_data_v2[TARGET], models_v2['summer'].predict(summer_data_v2[['검침기온']]))
+
+        col_w, col_s = st.columns(2)
+        with col_w:
+            st.info(f"""
+**❄️ 동절기 모델 (검침기온 ≤ {WINTER_T:.0f}℃, n={len(winter_data_v2)})**
+
+학습 R² = {r2_w * 100:.2f}%
+
+$y = {cw[2]:.2f}x^3 {cw[1]:+.2f}x^2 {cw[0]:+.2f}x {iw:+.0f}$
+""")
+        with col_s:
+            st.info(f"""
+**☀️ 하절기 모델 (검침기온 ≥ {SUMMER_T:.0f}℃, n={len(summer_data_v2)})**
+
+학습 R² = {r2_s * 100:.2f}%
+
+$y = {cs[2]:.2f}x^3 {cs[1]:+.2f}x^2 {cs[0]:+.2f}x {isu:+.0f}$
+""")
+        st.caption(f"※ {WINTER_T:.0f}~{SUMMER_T:.0f}℃ 구간은 두 모델의 경계값을 선형보간하여 연결(중복계상 방지)")
+
+        # ── Ver1 vs Ver2 과거 적합도 비교 ──
+        eval_df_c['예측_판매량_v2'] = predict_piecewise_seasonal(models_v2, eval_df_c['검침기온'].values)
+        valid_v2 = eval_df_c['예측_판매량_v2'].notna()
+        r2_v1_eval = r2_score(eval_df_c.loc[valid_v2, TARGET], eval_df_c.loc[valid_v2, '예측_판매량'])
+        r2_v2_eval = r2_score(eval_df_c.loc[valid_v2, TARGET], eval_df_c.loc[valid_v2, '예측_판매량_v2'])
+        mae_v1_eval = np.mean(np.abs(eval_df_c.loc[valid_v2, '예측_판매량'] - eval_df_c.loc[valid_v2, TARGET]))
+        mae_v2_eval = np.mean(np.abs(eval_df_c.loc[valid_v2, '예측_판매량_v2'] - eval_df_c.loc[valid_v2, TARGET]))
+
+        mc1, mc2 = st.columns(2)
+        mc1.metric("Ver1 (단일 3차식) 검증 R²", f"{r2_v1_eval:.4f}", delta=f"MAE {mae_v1_eval:,.0f}")
+        mc2.metric("Ver2 (동절기/하절기 분리) 검증 R²", f"{r2_v2_eval:.4f}",
+                   delta=f"{r2_v2_eval - r2_v1_eval:+.4f} (MAE {mae_v2_eval:,.0f})")
+
+        monthly_eval_v2 = eval_df_c[['Year_Month', TARGET, '예측_판매량', '예측_판매량_v2']].copy()
+        monthly_eval_v2['Ver2_차이'] = monthly_eval_v2['예측_판매량_v2'] - monthly_eval_v2[TARGET]
+        monthly_eval_v2['Ver2_오차율(%)'] = (monthly_eval_v2['Ver2_차이'] / monthly_eval_v2[TARGET]) * 100
+        if has_plan_eval:
+            monthly_eval_v2 = monthly_eval_v2.merge(
+                monthly_eval_c[['Year_Month', '판매량_계획']], on='Year_Month', how='left')
+
+        chart_cols_v2 = [TARGET, '예측_판매량', '예측_판매량_v2'] + (['판매량_계획'] if has_plan_eval else [])
+        st.line_chart(monthly_eval_v2.set_index('Year_Month')[chart_cols_v2],
+                      use_container_width=True, height=420)
+        st.caption("🟦 실적 · 🟨 예측_판매량(Ver1 단일 3차식) · 🟩 예측_판매량_v2(Ver2 동절기/하절기 분리)"
+                   + (" · 🟥 판매량_계획" if has_plan_eval else ""))
+
+        fmt_v2 = {TARGET: "{:,.0f}", '예측_판매량': "{:,.0f}", '예측_판매량_v2': "{:,.0f}",
+                  'Ver2_차이': "{:,.0f}", 'Ver2_오차율(%)': "{:.1f}%", '판매량_계획': "{:,.0f}"}
+        v2_show_cols = ['Year_Month', TARGET, '예측_판매량', '예측_판매량_v2', 'Ver2_차이', 'Ver2_오차율(%)']
+        if has_plan_eval:
+            v2_show_cols += ['판매량_계획']
+        st.markdown("**🗂️ 월별 Ver1 vs Ver2 비교**")
+        st.dataframe(monthly_eval_v2[v2_show_cols].style.format(fmt_v2, na_rep='-'),
+                     use_container_width=True, hide_index=True)
+
+        csv_eval_v2 = monthly_eval_v2[v2_show_cols].to_csv(index=False).encode('utf-8-sig')
+        st.download_button("📥 Ver2 과거 적합도 검증 리포트 다운로드", data=csv_eval_v2,
+                           file_name="냉방용_Ver2_과거적합도_검증리포트.csv", mime="text/csv")
+
     # ── Part 2: 미래 시나리오 ──
     st.markdown("---")
     st.subheader("🔮 미래 냉방용 판매량 추정 시나리오")
@@ -511,6 +656,34 @@ $y = {coef_c[2]:.2f}x^3 {coef_c[1]:+.2f}x^2 {coef_c[0]:+.2f}x {inter_c:+.0f}$
         csv_future_c = future_df_c[show_cols].to_csv(index=False).encode('utf-8-sig')
         st.download_button("📥 냉방용 미래 시나리오 다운로드", data=csv_future_c,
                            file_name="냉방용_미래시나리오.csv", mime="text/csv")
+
+        # ── Ver2 미래 시나리오 (동절기/하절기 분리) ──
+        if models_v2['winter'] is not None and models_v2['summer'] is not None:
+            st.markdown("---")
+            st.markdown("**🆕 Ver2 미래 시나리오 (동절기/하절기 분리)**")
+
+            future_df_c['예측_판매량_v2'] = predict_piecewise_seasonal(
+                models_v2, future_df_c['검침기온'].values)
+
+            chart_cols_v2_fut = ['예측_판매량', '예측_판매량_v2'] \
+                + ([TARGET] if has_actual else []) + (['판매량_계획'] if has_plan_future else [])
+            st.line_chart(future_df_c.set_index('Year_Month')[chart_cols_v2_fut],
+                          use_container_width=True, height=420)
+            st.caption("🟨 예측_판매량(Ver1) · 🟩 예측_판매량_v2(Ver2 동절기/하절기 분리)"
+                       + (" · 🟦 실적" if has_actual else "") + (" · 🟥 판매량_계획" if has_plan_future else ""))
+
+            v2_fut_cols = ['Year_Month', '검침기온', '예측_판매량', '예측_판매량_v2']
+            if has_actual:
+                v2_fut_cols.append(TARGET)
+            if has_plan_future:
+                v2_fut_cols.append('판매량_계획')
+            fmt_v2_fut = {**fmt_fc, '예측_판매량_v2': "{:,.0f}"}
+            st.dataframe(future_df_c[v2_fut_cols].style.format(fmt_v2_fut, na_rep='-'),
+                         use_container_width=True, hide_index=True)
+
+            csv_future_v2 = future_df_c[v2_fut_cols].to_csv(index=False).encode('utf-8-sig')
+            st.download_button("📥 Ver2 미래 시나리오 다운로드", data=csv_future_v2,
+                               file_name="냉방용_Ver2_미래시나리오.csv", mime="text/csv")
     else:
         st.info("좌측에서 미래 시나리오 추정 연도를 선택하면 결과가 표시됩니다.")
 
