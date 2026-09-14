@@ -32,6 +32,13 @@ LINE_COLORS = {
     '판매량_계획':         "#f1948a",
 }
 
+SERIES_LABELS = {
+    '냉방용_판매량':  '실적',
+    '예측_판매량':    '기존 단일 3차식',
+    '예측_판매량_v3': '채택모델(분리·2차식)',
+    '판매량_계획':    '판매량 계획',
+}
+
 
 
 def render_line_chart(df, x_col, y_cols, height=420, title=None):
@@ -459,7 +466,7 @@ def _build_diff_table(df, x_col, target_col, selected_cols):
 
 def render_cooling_analysis():
     st.header("🧊 냉방용 사용량 분석 심화ver")
-    st.markdown("- 전월16일 ~ 당월15일 실제기온 평균 적용 (세 가지 모델 모두 공통)")
+    st.markdown("- 전월16일부터 당월15일까지의 실제기온 평균 적용 (세 가지 모델 모두 공통)")
 
     with st.spinner("냉방용 데이터를 불러오는 중입니다..."):
         daily_temp_df = load_daily_temp_for_cooling()
@@ -563,8 +570,8 @@ ${poly_eq_str(cw, iw)}$
 
 ${poly_eq_str(cs, isu)}$
 """)
-    st.caption(f"※ {WINTER_T:.0f}~{SUMMER_T:.0f}℃ 구간은 두 모델의 경계값을 선형보간하여 연결(중복계상 방지) "
-               f"· 기온 소스: 구글시트 일별 기온 → 검침기간(전월16일~당월15일) 평균 · 판매량 소스: 판매량 실적 시트 — 냉방용")
+    st.caption(f"※ {WINTER_T:.0f}℃부터 {SUMMER_T:.0f}℃ 사이 구간은 두 모델의 경계값을 선형보간하여 연결(중복계상 방지) "
+               f"· 기온 소스: 구글시트 일별 기온 → 검침기간(전월16일부터 당월15일까지) 평균 · 판매량 소스: 판매량 실적 시트 — 냉방용")
 
     with st.expander("🔎 실제기온 ↔ 냉방용 판매량 산점도 (학습 데이터)"):
         st.scatter_chart(train_df_c.rename(columns={'검침기온': '실제기온'}), x='실제기온', y=TARGET, height=380)
@@ -609,17 +616,23 @@ ${poly_eq_str(cs, isu)}$
 
     all_series_eval = [TARGET, '예측_판매량', '예측_판매량_v3'] + (['판매량_계획'] if has_plan_eval else [])
 
-    render_line_chart(monthly_eval_c, 'Year_Month', all_series_eval, height=420)
-    st.caption("🟦 실적 · 🟨 예측_판매량(기존 단일 3차식) · 🟪 예측_판매량_v3(채택모델: 분리·2차식)"
-               + (" · 🌸 판매량_계획" if has_plan_eval else "") + " — 범례 클릭 시 라인 표시/숨김")
+    st.markdown("**📌 비교할 항목 선택** (차트·연도별·월별 표에 모두 동일하게 반영됩니다)")
+    selected_eval = st.multiselect(
+        "표시할 시리즈", options=all_series_eval, default=all_series_eval,
+        format_func=lambda c: SERIES_LABELS.get(c, c), key="eval_series_select")
+    if not selected_eval:
+        st.info("표시할 항목을 1개 이상 선택해주세요. 우선 전체 항목을 표시합니다.")
+        selected_eval = all_series_eval
+
+    render_line_chart(monthly_eval_c, 'Year_Month', selected_eval, height=420)
 
     yearly_agg_eval = monthly_eval_c.groupby('Year')[all_series_eval].sum().reset_index()
-    yearly_table_eval = _build_diff_table(yearly_agg_eval, 'Year', TARGET, all_series_eval)
+    yearly_table_eval = _build_diff_table(yearly_agg_eval, 'Year', TARGET, selected_eval)
     st.markdown("**📆 연도별 실적 대비 차이 요약**")
     st.dataframe(yearly_table_eval.style.format(_dynamic_fmt(yearly_table_eval, 'Year')),
                  use_container_width=True, hide_index=True)
 
-    monthly_table_eval = _build_diff_table(monthly_eval_c, 'Year_Month', TARGET, all_series_eval)
+    monthly_table_eval = _build_diff_table(monthly_eval_c, 'Year_Month', TARGET, selected_eval)
     st.markdown("**🗂️ 월별 상세 비교**")
     st.dataframe(monthly_table_eval.style.format(_dynamic_fmt(monthly_table_eval, 'Year_Month')),
                  use_container_width=True, hide_index=True)
@@ -669,21 +682,27 @@ ${poly_eq_str(cs, isu)}$
         st.caption(f"미래 예측기온 추정: 최근 {y_years_c}개년"
                    f"({min(sim_base_years_c)}~{max(sim_base_years_c)}) 동월 실제기온 평균 사용")
 
-        chart_cols_fut = ['예측_판매량', '예측_판매량_v3'] + ([TARGET] if has_actual else [])             + (['판매량_계획'] if has_plan_future else [])
-        render_line_chart(future_df_c, 'Year_Month', chart_cols_fut, height=420)
-        st.caption("🟨 예측_판매량(기존 단일 3차식) · 🟪 예측_판매량_v3(채택모델: 분리·2차식)"
-                   + (" · 🟦 실적" if has_actual else "") + (" · 🌸 판매량_계획" if has_plan_future else "")
-                   + " — 범례 클릭 시 라인 표시/숨김")
+        agg_cols_fut = ['예측_판매량', '예측_판매량_v3'] + ([TARGET] if has_actual else []) \
+            + (['판매량_계획'] if has_plan_future else [])
 
-        agg_cols_fut = ['예측_판매량', '예측_판매량_v3'] + ([TARGET] if has_actual else [])             + (['판매량_계획'] if has_plan_future else [])
+        st.markdown("**📌 비교할 항목 선택** (차트·연도별·월별 표에 모두 동일하게 반영됩니다)")
+        selected_fut = st.multiselect(
+            "표시할 시리즈", options=agg_cols_fut, default=agg_cols_fut,
+            format_func=lambda c: SERIES_LABELS.get(c, c), key="future_series_select")
+        if not selected_fut:
+            st.info("표시할 항목을 1개 이상 선택해주세요. 우선 전체 항목을 표시합니다.")
+            selected_fut = agg_cols_fut
+
+        render_line_chart(future_df_c, 'Year_Month', selected_fut, height=420)
+
         yearly_future_c = future_df_c.groupby('Year')[agg_cols_fut].sum().reset_index()
         yearly_future_c = _build_diff_table(
-            yearly_future_c, 'Year', TARGET if has_actual else '예측_판매량_v3', agg_cols_fut)
+            yearly_future_c, 'Year', TARGET if has_actual else '예측_판매량_v3', selected_fut)
         st.markdown("**📆 연도별 시나리오 합산**")
         st.dataframe(yearly_future_c.style.format(_dynamic_fmt(yearly_future_c, 'Year')),
                      use_container_width=True, hide_index=True)
 
-        show_cols = ['Year_Month', '검침기온'] + agg_cols_fut
+        show_cols = ['Year_Month', '검침기온'] + selected_fut
         disp_future = future_df_c[show_cols].rename(columns={'검침기온': '예측기온'})
         fmt_disp_future = _dynamic_fmt(disp_future, 'Year_Month')
         fmt_disp_future['예측기온'] = "{:.1f}℃"
