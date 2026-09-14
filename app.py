@@ -185,6 +185,7 @@ def load_and_preprocess_heating_data(monthly_temp_df):
 # ==========================================
 
 SALES_SHEET_URL = "https://docs.google.com/spreadsheets/d/1-8RIPIkjnVXxoh5QJs6598nnHkWOGmrO655jr3b3g04/export?format=csv&gid=0"
+PLAN_SHEET_URL = "https://docs.google.com/spreadsheets/d/1zu2R21_P6z6yCeWz7yX1K6IYhj541hcr3IvCAaHLEQ8/export?format=csv&gid=0"
 
 
 @st.cache_data
@@ -269,6 +270,41 @@ def load_cooling_sales():
     return out.rename(columns={cooling_col: '냉방용_판매량'})
 
 
+@st.cache_data
+def load_cooling_plan():
+    """
+    '상품별판매량 계획' 구글시트 — '냉방용' 컬럼(기존 계획값) 로드.
+    로드 실패/컬럼 미탐지 시 None을 반환하며, 호출부에서 계획 비교 없이 진행하도록 처리한다.
+    """
+    try:
+        df = pd.read_csv(PLAN_SHEET_URL)
+    except Exception as e:
+        st.sidebar.warning(f"⚠️ 판매량 계획 시트 로드 실패: {e} (계획 비교 생략)")
+        return None
+
+    col_list = df.columns.tolist()
+    plan_col = None
+    for c in col_list:
+        if '냉방' in c:
+            plan_col = c; break
+    if plan_col is None:
+        st.sidebar.warning("판매량 계획 시트에서 '냉방용' 컬럼을 찾을 수 없어 계획 비교를 생략합니다.")
+        return None
+
+    year_col  = '연' if '연' in col_list else ('Year' if 'Year' in col_list else col_list[1])
+    month_col = '월' if '월' in col_list else ('Month' if 'Month' in col_list else col_list[2])
+
+    out = df.rename(columns={year_col: 'Year', month_col: 'Month'})[['Year', 'Month', plan_col]].copy()
+    out[plan_col] = pd.to_numeric(
+        out[plan_col].astype(str).str.replace(r'[^\d.\-]', '', regex=True), errors='coerce')
+    out['Year']  = pd.to_numeric(out['Year'], errors='coerce')
+    out['Month'] = pd.to_numeric(out['Month'], errors='coerce')
+    out = out.dropna(subset=['Year', 'Month', plan_col])
+    out['Year']  = out['Year'].astype(int)
+    out['Month'] = out['Month'].astype(int)
+    return out.rename(columns={plan_col: '판매량_계획'})
+
+
 def render_cooling_analysis():
     st.header("🧊 [Part 3] 냉방용 사용량 분석 — 검침기간 평균기온 (전월16일~당월15일)")
     st.markdown(
@@ -281,6 +317,7 @@ def render_cooling_analysis():
         daily_temp_df = load_daily_temp_for_cooling()
         meter_temp_df = compute_meter_reading_temp(daily_temp_df)
         sales_df = load_cooling_sales()
+        plan_df = load_cooling_plan()  # None일 수 있음 (로드 실패/컬럼 미탐지 시 계획 비교 생략)
         merged_cool = pd.merge(meter_temp_df, sales_df, on=['Year', 'Month'], how='inner')
         merged_cool['Year_Month'] = merged_cool.apply(
             lambda r: f"{int(r['Year'])}-{int(r['Month']):02d}", axis=1)
@@ -345,28 +382,55 @@ $y = {coef_c[2]:.2f}x^3 {coef_c[1]:+.2f}x^2 {coef_c[0]:+.2f}x {inter_c:+.0f}$
     eval_df_c = merged_cool[merged_cool['Year'].isin(eval_years_c)].copy()
     eval_df_c['예측_판매량'] = model_c.predict(eval_df_c[['검침기온']])
 
-    monthly_eval_c = eval_df_c[['Year_Month', 'Year', TARGET, '예측_판매량']].copy()
+    monthly_eval_c = eval_df_c[['Year_Month', 'Year', 'Month', TARGET, '예측_판매량']].copy()
     monthly_eval_c['차이'] = monthly_eval_c['예측_판매량'] - monthly_eval_c[TARGET]
     monthly_eval_c['오차율(%)'] = (monthly_eval_c['차이'] / monthly_eval_c[TARGET]) * 100
+
+    has_plan_eval = False
+    if plan_df is not None:
+        monthly_eval_c = monthly_eval_c.merge(plan_df, on=['Year', 'Month'], how='left')
+        has_plan_eval = monthly_eval_c['판매량_계획'].notna().any()
+        if has_plan_eval:
+            monthly_eval_c['예측_계획_차이'] = monthly_eval_c['예측_판매량'] - monthly_eval_c['판매량_계획']
+            monthly_eval_c['예측_계획_오차율(%)'] = (
+                monthly_eval_c['예측_계획_차이'] / monthly_eval_c['판매량_계획']) * 100
 
     yearly_eval_c = eval_df_c.groupby('Year').agg({TARGET: 'sum', '예측_판매량': 'sum'}).reset_index()
     yearly_eval_c['차이'] = yearly_eval_c['예측_판매량'] - yearly_eval_c[TARGET]
     yearly_eval_c['오차율(%)'] = (yearly_eval_c['차이'] / yearly_eval_c[TARGET]) * 100
+    if has_plan_eval:
+        plan_by_year = monthly_eval_c.groupby('Year')['판매량_계획'].sum().reset_index()
+        yearly_eval_c = yearly_eval_c.merge(plan_by_year, on='Year', how='left')
+        yearly_eval_c['예측_계획_차이'] = yearly_eval_c['예측_판매량'] - yearly_eval_c['판매량_계획']
+        yearly_eval_c['예측_계획_오차율(%)'] = (
+            yearly_eval_c['예측_계획_차이'] / yearly_eval_c['판매량_계획']) * 100
 
-    fmt_c = {TARGET: "{:,.0f}", '예측_판매량': "{:,.0f}", '차이': "{:,.0f}", '오차율(%)': "{:.1f}%"}
+    fmt_c = {TARGET: "{:,.0f}", '예측_판매량': "{:,.0f}", '차이': "{:,.0f}", '오차율(%)': "{:.1f}%",
+             '판매량_계획': "{:,.0f}", '예측_계획_차이': "{:,.0f}", '예측_계획_오차율(%)': "{:.1f}%"}
 
-    st.line_chart(monthly_eval_c.set_index('Year_Month')[[TARGET, '예측_판매량']],
+    chart_cols_eval = [TARGET, '예측_판매량'] + (['판매량_계획'] if has_plan_eval else [])
+    st.line_chart(monthly_eval_c.set_index('Year_Month')[chart_cols_eval],
                   use_container_width=True, height=420)
+    if has_plan_eval:
+        st.caption("🟦 냉방용_판매량(실적) · 🟨 예측_판매량(신규 검침기온 Poly-3) · 🟩 판매량_계획(기존 계획, 상품별판매량 계획 시트)")
+
+    eval_show_cols = ['Year_Month', TARGET, '예측_판매량', '차이', '오차율(%)']
+    if has_plan_eval:
+        eval_show_cols += ['판매량_계획', '예측_계획_차이', '예측_계획_오차율(%)']
 
     st.markdown("**🗂️ 월별 적합도 상세**")
-    st.dataframe(monthly_eval_c[['Year_Month', TARGET, '예측_판매량', '차이', '오차율(%)']]
+    st.dataframe(monthly_eval_c[eval_show_cols]
                  .style.format(fmt_c, na_rep='-'), use_container_width=True, hide_index=True)
+
+    yearly_show_cols = ['Year', TARGET, '예측_판매량', '차이', '오차율(%)']
+    if has_plan_eval:
+        yearly_show_cols += ['판매량_계획', '예측_계획_차이', '예측_계획_오차율(%)']
 
     st.markdown("**📆 연도별 적합도 요약**")
-    st.dataframe(yearly_eval_c[['Year', TARGET, '예측_판매량', '차이', '오차율(%)']]
+    st.dataframe(yearly_eval_c[yearly_show_cols]
                  .style.format(fmt_c, na_rep='-'), use_container_width=True, hide_index=True)
 
-    csv_eval_c = monthly_eval_c[['Year_Month', TARGET, '예측_판매량', '차이', '오차율(%)']] \
+    csv_eval_c = monthly_eval_c[eval_show_cols] \
         .to_csv(index=False).encode('utf-8-sig')
     st.download_button("📥 냉방용 과거 적합도 검증 리포트 다운로드", data=csv_eval_c,
                        file_name="냉방용_과거적합도_검증리포트.csv", mime="text/csv")
@@ -397,16 +461,31 @@ $y = {coef_c[2]:.2f}x^3 {coef_c[1]:+.2f}x^2 {coef_c[0]:+.2f}x {inter_c:+.0f}$
             future_df_c['차이'] = future_df_c['예측_판매량'] - future_df_c[TARGET]
             future_df_c['오차율(%)'] = (future_df_c['차이'] / future_df_c[TARGET]) * 100
 
+        # 판매량 계획(기존 계획, 상품별판매량 계획 시트) 병합
+        has_plan_future = False
+        if plan_df is not None:
+            future_df_c = pd.merge(future_df_c, plan_df, on=['Year', 'Month'], how='left')
+            has_plan_future = future_df_c['판매량_계획'].notna().any()
+            if has_plan_future:
+                future_df_c['예측_계획_차이'] = future_df_c['예측_판매량'] - future_df_c['판매량_계획']
+                future_df_c['예측_계획_오차율(%)'] = (
+                    future_df_c['예측_계획_차이'] / future_df_c['판매량_계획']) * 100
+
         st.caption(f"미래 검침기온 추정: 최근 {y_years_c}개년"
                    f"({min(sim_base_years_c)}~{max(sim_base_years_c)}) 동월 검침기온 평균 사용")
 
-        chart_cols_c = ['예측_판매량'] + ([TARGET] if has_actual else [])
+        chart_cols_c = ['예측_판매량'] + ([TARGET] if has_actual else []) + (['판매량_계획'] if has_plan_future else [])
         st.line_chart(future_df_c.set_index('Year_Month')[chart_cols_c],
                       use_container_width=True, height=420)
+        if has_plan_future:
+            st.caption("🟨 예측_판매량(신규 검침기온 Poly-3) · 🟩 판매량_계획(기존 계획)"
+                       + (" · 🟦 냉방용_판매량(실적)" if has_actual else ""))
 
         show_cols = ['Year_Month', '검침기온', '예측_판매량']
         if has_actual:
             show_cols += [TARGET, '차이', '오차율(%)']
+        if has_plan_future:
+            show_cols += ['판매량_계획', '예측_계획_차이', '예측_계획_오차율(%)']
         fmt_fc = {**fmt_c, '검침기온': "{:.1f}℃"}
         st.markdown("**🗂️ 월별 시나리오**")
         st.dataframe(future_df_c[show_cols].style.format(fmt_fc, na_rep='-'),
@@ -415,10 +494,16 @@ $y = {coef_c[2]:.2f}x^3 {coef_c[1]:+.2f}x^2 {coef_c[0]:+.2f}x {inter_c:+.0f}$
         agg_cols = {'예측_판매량': 'sum'}
         if has_actual:
             agg_cols[TARGET] = 'sum'
+        if has_plan_future:
+            agg_cols['판매량_계획'] = 'sum'
         yearly_future_c = future_df_c.groupby('Year').agg(agg_cols).reset_index()
         if has_actual:
             yearly_future_c['차이'] = yearly_future_c['예측_판매량'] - yearly_future_c[TARGET]
             yearly_future_c['오차율(%)'] = (yearly_future_c['차이'] / yearly_future_c[TARGET]) * 100
+        if has_plan_future:
+            yearly_future_c['예측_계획_차이'] = yearly_future_c['예측_판매량'] - yearly_future_c['판매량_계획']
+            yearly_future_c['예측_계획_오차율(%)'] = (
+                yearly_future_c['예측_계획_차이'] / yearly_future_c['판매량_계획']) * 100
         st.markdown("**📆 연도별 시나리오 합산**")
         st.dataframe(yearly_future_c.style.format(fmt_c, na_rep='-'),
                      use_container_width=True, hide_index=True)
