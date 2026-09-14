@@ -520,6 +520,79 @@ def render_diff_table(df, x_col, target_col=None, key_prefix="tbl"):
     st.dataframe(styler, use_container_width=True, hide_index=True)
 
 
+def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_prefix="tbl", target_label=None):
+    """
+    연도별 집계표 전용 렌더러. monthly_raw_df는 'Year'(또는 'Year_Month') + 선택 시리즈의
+    "월별 원본값"을 담은 DataFrame이어야 한다 (차이 컬럼 없이).
+
+    MAE 토글 off: 연간 합계끼리의 순차이 (연간계획합 − 연간실적합) — 부호 있는 순차이.
+    MAE 토글 on : 월별로 먼저 |차이|를 구한 뒤 연도별 평균 — 진짜 MAE(평균절대오차).
+                  (연간 합계끼리의 차이에 단순히 절대값만 씌우면 +/-가 서로 상쇄된 순차이의
+                  절대값이 나와서 실제 월별 오차 크기를 반영하지 못하므로, 반드시 월 단위에서
+                  먼저 절대값을 취하고 나서 연도로 집계해야 한다.)
+    """
+    use_mae = st.checkbox("📌 차이를 절대값(MAE)으로 표시 — 월별 오차를 먼저 절대값화한 뒤 연평균",
+                          key=f"{key_prefix}_mae_toggle")
+
+    tmp = monthly_raw_df.copy()
+    if 'Year' not in tmp.columns:
+        tmp['Year'] = tmp['Year_Month'].str[:4].astype(int)
+
+    cols = [c for c in selected_cols if c in tmp.columns]
+    has_target = target_col in cols
+    label = target_label or SERIES_LABELS.get(target_col, target_col)
+
+    yearly_raw = tmp.groupby('Year')[cols].sum().reset_index()
+
+    # MAE 모드용: 월별 signed 차이/오차율을 미리 계산
+    monthly_diff, monthly_pct = {}, {}
+    if has_target:
+        for c in cols:
+            if c == target_col:
+                continue
+            monthly_diff[c] = tmp[c] - tmp[target_col]
+            with np.errstate(divide='ignore', invalid='ignore'):
+                monthly_pct[c] = np.where(tmp[target_col] != 0, monthly_diff[c] / tmp[target_col] * 100, np.nan)
+
+    out = pd.DataFrame({'Year': yearly_raw['Year']})
+    pending, target_seen = [], False
+
+    def add_diff(c):
+        if use_mae:
+            out[f'{c}_{label}대비MAE'] = pd.Series(monthly_diff[c], index=tmp.index).abs() \
+                .groupby(tmp['Year']).mean().values
+            out[f'{c}_{label}대비오차율(%)'] = pd.Series(monthly_pct[c], index=tmp.index).abs() \
+                .groupby(tmp['Year']).mean().values
+        else:
+            diff_val = yearly_raw[c] - yearly_raw[target_col]
+            out[f'{c}_{label}대비차이'] = diff_val
+            with np.errstate(divide='ignore', invalid='ignore'):
+                out[f'{c}_{label}대비오차율(%)'] = np.where(
+                    yearly_raw[target_col] != 0, diff_val / yearly_raw[target_col] * 100, np.nan)
+
+    for c in cols:
+        out[c] = yearly_raw[c]
+        if c == target_col:
+            target_seen = True
+            for pc in pending:
+                add_diff(pc)
+            continue
+        if not has_target:
+            continue
+        if not target_seen:
+            pending.append(c)
+        else:
+            add_diff(c)
+
+    fmt = _dynamic_fmt(out, 'Year')
+    styler = out.style.format(fmt, na_rep='-')
+    styler = styler.set_properties(subset=['Year'], **{'background-color': '#eef2f7', 'font-weight': '600'})
+    if target_col in out.columns:
+        styler = styler.set_properties(subset=[target_col], **{'background-color': '#dbeafe', 'font-weight': '600'})
+    st.dataframe(styler, use_container_width=True, hide_index=True)
+    return out
+
+
 def _build_diff_table(df, x_col, target_col, selected_cols, target_label=None):
     """
     df에서 x_col + selected_cols(원본값 컬럼)로 표를 만든다.
@@ -557,7 +630,6 @@ def _build_diff_table(df, x_col, target_col, selected_cols, target_label=None):
             pending_before_target.append(c)
         else:
             _add_diff(c)
-    return out
     return out
 
 
@@ -739,10 +811,8 @@ ${poly_eq_str(cs, isu)}$
 
     table_series_eval = _ensure_baseline_cols(selected_eval, TARGET, has_plan=has_plan_eval)
 
-    yearly_agg_eval = monthly_eval_c.groupby('Year')[all_series_eval].sum().reset_index()
-    yearly_table_eval = _build_diff_table(yearly_agg_eval, 'Year', TARGET, table_series_eval)
     st.markdown("**📆 연도별 실적 대비 차이 요약**")
-    render_diff_table(yearly_table_eval, 'Year', target_col=TARGET, key_prefix="eval_yearly")
+    yearly_table_eval = render_yearly_diff_table(monthly_eval_c, TARGET, table_series_eval, key_prefix="eval_yearly")
 
     monthly_table_eval = _build_diff_table(monthly_eval_c, 'Year_Month', TARGET, table_series_eval)
     st.markdown("**🗂️ 월별 상세 비교**")
@@ -813,16 +883,19 @@ ${poly_eq_str(cs, isu)}$
         future_target_col = TARGET if has_actual else '예측_판매량_v3'
         table_series_fut = _ensure_baseline_cols(selected_fut, future_target_col, has_plan=has_plan_future)
 
-        yearly_future_c = future_df_c.groupby('Year')[agg_cols_fut].sum().reset_index()
-        yearly_future_c = _build_diff_table(yearly_future_c, 'Year', future_target_col, table_series_fut)
         st.markdown("**📆 연도별 시나리오 합산**")
-        render_diff_table(yearly_future_c, 'Year', target_col=future_target_col, key_prefix="future_yearly")
+        yearly_future_c = render_yearly_diff_table(
+            future_df_c, future_target_col, table_series_fut, key_prefix="future_yearly")
 
-        show_cols = ['Year_Month', '검침기온'] + table_series_fut
-        disp_future = future_df_c[show_cols].rename(columns={'검침기온': '예측기온'})
+        monthly_future_diff = _build_diff_table(future_df_c, 'Year_Month', future_target_col, table_series_fut)
+        monthly_future_diff = monthly_future_diff.merge(
+            future_df_c[['Year_Month', '검침기온']], on='Year_Month', how='left')
+        cols_order = ['Year_Month', '검침기온'] + [c for c in monthly_future_diff.columns
+                                                  if c not in ('Year_Month', '검침기온')]
+        disp_future = monthly_future_diff[cols_order].rename(columns={'검침기온': '예측기온'})
         st.markdown("**🗂️ 월별 시나리오**")
         render_diff_table(disp_future, 'Year_Month',
-                          target_col=TARGET if TARGET in disp_future.columns else None,
+                          target_col=future_target_col if future_target_col in disp_future.columns else None,
                           key_prefix="future_monthly")
 
         csv_future_c = disp_future.to_csv(index=False).encode('utf-8-sig')
