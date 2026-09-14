@@ -426,6 +426,35 @@ def poly_eq_str(coefs, intercept):
     return f"y = {eq}"
 
 
+def _dynamic_fmt(df, x_col):
+    """df의 x_col을 제외한 모든 컬럼에 대해, '오차율'이 들어간 컬럼은 %, 나머지는 천단위 콤마로 포맷."""
+    fmt = {}
+    for c in df.columns:
+        if c == x_col:
+            continue
+        fmt[c] = "{:.1f}%" if '오차율' in c else "{:,.0f}"
+    return fmt
+
+
+def _build_diff_table(df, x_col, target_col, selected_cols):
+    """
+    df에서 x_col + selected_cols(원본값 컬럼)만 뽑아 표를 만들고,
+    target_col이 selected_cols에 포함돼 있으면 나머지 선택 시리즈마다
+    target 대비 '_차이' / '_오차율(%)' 컬럼을 자동으로 추가한다.
+    """
+    cols = [c for c in selected_cols if c in df.columns]
+    out = df[[x_col] + cols].copy()
+    if target_col in cols:
+        for c in cols:
+            if c == target_col:
+                continue
+            out[f'{c}_차이'] = out[c] - out[target_col]
+            with np.errstate(divide='ignore', invalid='ignore'):
+                out[f'{c}_오차율(%)'] = np.where(
+                    out[target_col] != 0, out[f'{c}_차이'] / out[target_col] * 100, np.nan)
+    return out
+
+
 def render_cooling_analysis():
     st.header("🧊 [Part 3] 냉방용 사용량 분석 — 검침기간 평균기온 (전월16일~당월15일)")
     st.markdown(
@@ -716,33 +745,51 @@ ${poly_eq_str(cs3, isu3)}$
         monthly_eval_v3 = eval_df_c[['Year_Month', TARGET, '예측_판매량', '예측_판매량_v3']].copy()
         if has_v2_col:
             monthly_eval_v3['예측_판매량_v2'] = eval_df_c['예측_판매량_v2']
-        monthly_eval_v3['Ver3_차이'] = monthly_eval_v3['예측_판매량_v3'] - monthly_eval_v3[TARGET]
-        monthly_eval_v3['Ver3_오차율(%)'] = (monthly_eval_v3['Ver3_차이'] / monthly_eval_v3[TARGET]) * 100
         if has_plan_eval:
             monthly_eval_v3 = monthly_eval_v3.merge(
                 monthly_eval_c[['Year_Month', '판매량_계획']], on='Year_Month', how='left')
 
-        chart_cols_v3 = [TARGET, '예측_판매량'] + (['예측_판매량_v2'] if has_v2_col else []) \
+        all_series_v3 = [TARGET, '예측_판매량'] + (['예측_판매량_v2'] if has_v2_col else []) \
             + ['예측_판매량_v3'] + (['판매량_계획'] if has_plan_eval else [])
-        render_line_chart(monthly_eval_v3, 'Year_Month', chart_cols_v3, height=420)
+
+        st.markdown("**📌 비교할 항목 선택** (선택한 항목만 차트·표에 반영됩니다)")
+        selected_v3 = st.multiselect(
+            "표시할 시리즈", options=all_series_v3, default=all_series_v3, key="v3_series_select")
+        if not selected_v3:
+            st.info("표시할 항목을 1개 이상 선택해주세요. 우선 전체 항목을 표시합니다.")
+            selected_v3 = all_series_v3
+
+        render_line_chart(monthly_eval_v3, 'Year_Month', selected_v3, height=420)
         st.caption("🟦 실적 · 🟨 예측_판매량(Ver1) " + ("· 🟥 예측_판매량_v2(Ver2) " if has_v2_col else "")
                    + "· 🟪 예측_판매량_v3(Ver3 2차식)"
-                   + (" · 🌸 판매량_계획" if has_plan_eval else "") + " — 범례 클릭 시 라인 표시/숨김")
+                   + (" · 🌸 판매량_계획" if has_plan_eval else "")
+                   + " — 위 선택 목록에서 항목을 껐다 켤 수 있습니다")
 
-        fmt_v3 = {TARGET: "{:,.0f}", '예측_판매량': "{:,.0f}", '예측_판매량_v2': "{:,.0f}",
-                  '예측_판매량_v3': "{:,.0f}", 'Ver3_차이': "{:,.0f}", 'Ver3_오차율(%)': "{:.1f}%",
-                  '판매량_계획': "{:,.0f}"}
-        v3_show_cols = ['Year_Month', TARGET, '예측_판매량'] + (['예측_판매량_v2'] if has_v2_col else []) \
-            + ['예측_판매량_v3', 'Ver3_차이', 'Ver3_오차율(%)']
-        if has_plan_eval:
-            v3_show_cols += ['판매량_계획']
-        st.markdown("**🗂️ 월별 Ver1 vs Ver2 vs Ver3 비교**")
-        st.dataframe(monthly_eval_v3[v3_show_cols].style.format(fmt_v3, na_rep='-'),
+        # ── 연도별 실적 대비 차이 요약 (월별 상세보다 먼저 표시) ──
+        yearly_raw_v3 = monthly_eval_v3.copy()
+        yearly_raw_v3['Year'] = yearly_raw_v3['Year_Month'].str[:4].astype(int)
+        yearly_agg_v3 = yearly_raw_v3.groupby('Year')[all_series_v3].sum().reset_index()
+        yearly_table_v3 = _build_diff_table(yearly_agg_v3, 'Year', TARGET, selected_v3)
+
+        st.markdown("**📆 연도별 실적 대비 차이 요약**")
+        st.dataframe(yearly_table_v3.style.format(_dynamic_fmt(yearly_table_v3, 'Year')),
                      use_container_width=True, hide_index=True)
 
-        csv_eval_v3 = monthly_eval_v3[v3_show_cols].to_csv(index=False).encode('utf-8-sig')
-        st.download_button("📥 Ver3 과거 적합도 검증 리포트 다운로드", data=csv_eval_v3,
-                           file_name="냉방용_Ver3_과거적합도_검증리포트.csv", mime="text/csv")
+        # ── 월별 상세 비교 ──
+        monthly_table_v3 = _build_diff_table(monthly_eval_v3, 'Year_Month', TARGET, selected_v3)
+        st.markdown("**🗂️ 월별 Ver1 vs Ver2 vs Ver3 비교**")
+        st.dataframe(monthly_table_v3.style.format(_dynamic_fmt(monthly_table_v3, 'Year_Month')),
+                     use_container_width=True, hide_index=True)
+
+        dl1, dl2 = st.columns(2)
+        with dl1:
+            csv_eval_v3_yearly = yearly_table_v3.to_csv(index=False).encode('utf-8-sig')
+            st.download_button("📥 Ver3 연도별 요약 다운로드", data=csv_eval_v3_yearly,
+                               file_name="냉방용_Ver3_연도별요약.csv", mime="text/csv")
+        with dl2:
+            csv_eval_v3 = monthly_table_v3.to_csv(index=False).encode('utf-8-sig')
+            st.download_button("📥 Ver3 월별 상세 다운로드", data=csv_eval_v3,
+                               file_name="냉방용_Ver3_과거적합도_검증리포트.csv", mime="text/csv")
 
     # ── Part 2: 미래 시나리오 ──
     st.markdown("---")
