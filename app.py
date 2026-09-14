@@ -567,16 +567,16 @@ $y = {coef_c[2]:.2f}x^3 {coef_c[1]:+.2f}x^2 {coef_c[0]:+.2f}x {inter_c:+.0f}$
     if has_plan_eval:
         eval_show_cols += ['판매량_계획', '예측_계획_차이', '예측_계획_오차율(%)']
 
-    st.markdown("**🗂️ 월별 적합도 상세**")
-    st.dataframe(monthly_eval_c[eval_show_cols]
-                 .style.format(fmt_c, na_rep='-'), use_container_width=True, hide_index=True)
-
     yearly_show_cols = ['Year', TARGET, '예측_판매량', '차이', '오차율(%)']
     if has_plan_eval:
         yearly_show_cols += ['판매량_계획', '예측_계획_차이', '예측_계획_오차율(%)']
 
     st.markdown("**📆 연도별 적합도 요약**")
     st.dataframe(yearly_eval_c[yearly_show_cols]
+                 .style.format(fmt_c, na_rep='-'), use_container_width=True, hide_index=True)
+
+    st.markdown("**🗂️ 월별 적합도 상세**")
+    st.dataframe(monthly_eval_c[eval_show_cols]
                  .style.format(fmt_c, na_rep='-'), use_container_width=True, hide_index=True)
 
     csv_eval_c = monthly_eval_c[eval_show_cols] \
@@ -657,6 +657,16 @@ $y = {cs[2]:.2f}x^3 {cs[1]:+.2f}x^2 {cs[0]:+.2f}x {isu:+.0f}$
         render_line_chart(monthly_eval_v2, 'Year_Month', chart_cols_v2, height=420)
         st.caption("🟦 실적 · 🟨 예측_판매량(Ver1 단일 3차식) · 🟥 예측_판매량_v2(Ver2 동절기/하절기 분리)"
                    + (" · 🌸 판매량_계획" if has_plan_eval else "") + " — 범례 클릭 시 라인 표시/숨김")
+
+        yearly_v2 = monthly_eval_v2.copy()
+        yearly_v2['Year'] = yearly_v2['Year_Month'].str[:4].astype(int)
+        yearly_cols_v2 = chart_cols_v2
+        yearly_agg_v2 = yearly_v2.groupby('Year')[yearly_cols_v2].sum().reset_index()
+        yearly_table_v2 = _build_diff_table(yearly_agg_v2, 'Year', TARGET, yearly_cols_v2)
+
+        st.markdown("**📆 연도별 Ver1 vs Ver2 요약**")
+        st.dataframe(yearly_table_v2.style.format(_dynamic_fmt(yearly_table_v2, 'Year')),
+                     use_container_width=True, hide_index=True)
 
         fmt_v2 = {TARGET: "{:,.0f}", '예측_판매량': "{:,.0f}", '예측_판매량_v2': "{:,.0f}",
                   'Ver2_차이': "{:,.0f}", 'Ver2_오차율(%)': "{:.1f}%", '판매량_계획': "{:,.0f}"}
@@ -752,31 +762,24 @@ ${poly_eq_str(cs3, isu3)}$
         all_series_v3 = [TARGET, '예측_판매량'] + (['예측_판매량_v2'] if has_v2_col else []) \
             + ['예측_판매량_v3'] + (['판매량_계획'] if has_plan_eval else [])
 
-        st.markdown("**📌 비교할 항목 선택** (선택한 항목만 차트·표에 반영됩니다)")
-        selected_v3 = st.multiselect(
-            "표시할 시리즈", options=all_series_v3, default=all_series_v3, key="v3_series_select")
-        if not selected_v3:
-            st.info("표시할 항목을 1개 이상 선택해주세요. 우선 전체 항목을 표시합니다.")
-            selected_v3 = all_series_v3
-
-        render_line_chart(monthly_eval_v3, 'Year_Month', selected_v3, height=420)
+        render_line_chart(monthly_eval_v3, 'Year_Month', all_series_v3, height=420)
         st.caption("🟦 실적 · 🟨 예측_판매량(Ver1) " + ("· 🟥 예측_판매량_v2(Ver2) " if has_v2_col else "")
                    + "· 🟪 예측_판매량_v3(Ver3 2차식)"
                    + (" · 🌸 판매량_계획" if has_plan_eval else "")
-                   + " — 위 선택 목록에서 항목을 껐다 켤 수 있습니다")
+                   + " — 범례 클릭 시 라인 표시/숨김")
 
         # ── 연도별 실적 대비 차이 요약 (월별 상세보다 먼저 표시) ──
         yearly_raw_v3 = monthly_eval_v3.copy()
         yearly_raw_v3['Year'] = yearly_raw_v3['Year_Month'].str[:4].astype(int)
         yearly_agg_v3 = yearly_raw_v3.groupby('Year')[all_series_v3].sum().reset_index()
-        yearly_table_v3 = _build_diff_table(yearly_agg_v3, 'Year', TARGET, selected_v3)
+        yearly_table_v3 = _build_diff_table(yearly_agg_v3, 'Year', TARGET, all_series_v3)
 
-        st.markdown("**📆 연도별 실적 대비 차이 요약**")
+        st.markdown("**📆 연도별 Ver1 vs Ver2 vs Ver3 요약**")
         st.dataframe(yearly_table_v3.style.format(_dynamic_fmt(yearly_table_v3, 'Year')),
                      use_container_width=True, hide_index=True)
 
         # ── 월별 상세 비교 ──
-        monthly_table_v3 = _build_diff_table(monthly_eval_v3, 'Year_Month', TARGET, selected_v3)
+        monthly_table_v3 = _build_diff_table(monthly_eval_v3, 'Year_Month', TARGET, all_series_v3)
         st.markdown("**🗂️ 월별 Ver1 vs Ver2 vs Ver3 비교**")
         st.dataframe(monthly_table_v3.style.format(_dynamic_fmt(monthly_table_v3, 'Year_Month')),
                      use_container_width=True, hide_index=True)
@@ -841,10 +844,8 @@ ${poly_eq_str(cs3, isu3)}$
             show_cols += [TARGET, '차이', '오차율(%)']
         if has_plan_future:
             show_cols += ['판매량_계획', '예측_계획_차이', '예측_계획_오차율(%)']
-        fmt_fc = {**fmt_c, '검침기온': "{:.1f}℃"}
-        st.markdown("**🗂️ 월별 시나리오**")
-        st.dataframe(future_df_c[show_cols].style.format(fmt_fc, na_rep='-'),
-                     use_container_width=True, hide_index=True)
+        # 표시용: '검침기온'은 실측이 아닌 추정값이므로 '예상검침기온'으로 표기
+        fmt_fc = {**fmt_c, '예상검침기온': "{:.1f}℃"}
 
         agg_cols = {'예측_판매량': 'sum'}
         if has_actual:
@@ -863,7 +864,13 @@ ${poly_eq_str(cs3, isu3)}$
         st.dataframe(yearly_future_c.style.format(fmt_c, na_rep='-'),
                      use_container_width=True, hide_index=True)
 
-        csv_future_c = future_df_c[show_cols].to_csv(index=False).encode('utf-8-sig')
+        st.markdown("**🗂️ 월별 시나리오**")
+        st.dataframe(future_df_c[show_cols].rename(columns={'검침기온': '예상검침기온'})
+                     .style.format(fmt_fc, na_rep='-'),
+                     use_container_width=True, hide_index=True)
+
+        csv_future_c = future_df_c[show_cols].rename(columns={'검침기온': '예상검침기온'}) \
+            .to_csv(index=False).encode('utf-8-sig')
         st.download_button("📥 냉방용 미래 시나리오 다운로드", data=csv_future_c,
                            file_name="냉방용_미래시나리오.csv", mime="text/csv")
 
@@ -888,10 +895,23 @@ ${poly_eq_str(cs3, isu3)}$
             if has_plan_future:
                 v2_fut_cols.append('판매량_계획')
             fmt_v2_fut = {**fmt_fc, '예측_판매량_v2': "{:,.0f}"}
-            st.dataframe(future_df_c[v2_fut_cols].style.format(fmt_v2_fut, na_rep='-'),
+
+            yearly_v2_agg_cols = ['예측_판매량', '예측_판매량_v2'] + ([TARGET] if has_actual else []) \
+                + (['판매량_계획'] if has_plan_future else [])
+            yearly_v2_fut = future_df_c.groupby('Year')[yearly_v2_agg_cols].sum().reset_index()
+            yearly_v2_fut = _build_diff_table(
+                yearly_v2_fut, 'Year', TARGET if has_actual else '예측_판매량', yearly_v2_agg_cols)
+            st.markdown("**📆 Ver2 연도별 시나리오 합산**")
+            st.dataframe(yearly_v2_fut.style.format(_dynamic_fmt(yearly_v2_fut, 'Year')),
                          use_container_width=True, hide_index=True)
 
-            csv_future_v2 = future_df_c[v2_fut_cols].to_csv(index=False).encode('utf-8-sig')
+            st.markdown("**🗂️ Ver2 월별 시나리오**")
+            st.dataframe(future_df_c[v2_fut_cols].rename(columns={'검침기온': '예상검침기온'})
+                         .style.format(fmt_v2_fut, na_rep='-'),
+                         use_container_width=True, hide_index=True)
+
+            csv_future_v2 = future_df_c[v2_fut_cols].rename(columns={'검침기온': '예상검침기온'}) \
+                .to_csv(index=False).encode('utf-8-sig')
             st.download_button("📥 Ver2 미래 시나리오 다운로드", data=csv_future_v2,
                                file_name="냉방용_Ver2_미래시나리오.csv", mime="text/csv")
 
@@ -919,10 +939,24 @@ ${poly_eq_str(cs3, isu3)}$
             if has_plan_future:
                 v3_fut_cols.append('판매량_계획')
             fmt_v3_fut = {**fmt_fc, '예측_판매량_v2': "{:,.0f}", '예측_판매량_v3': "{:,.0f}"}
-            st.dataframe(future_df_c[v3_fut_cols].style.format(fmt_v3_fut, na_rep='-'),
+
+            yearly_v3_agg_cols = ['예측_판매량'] + (['예측_판매량_v2'] if has_v2_fut_col else []) \
+                + ['예측_판매량_v3'] + ([TARGET] if has_actual else []) \
+                + (['판매량_계획'] if has_plan_future else [])
+            yearly_v3_fut = future_df_c.groupby('Year')[yearly_v3_agg_cols].sum().reset_index()
+            yearly_v3_fut = _build_diff_table(
+                yearly_v3_fut, 'Year', TARGET if has_actual else '예측_판매량', yearly_v3_agg_cols)
+            st.markdown("**📆 Ver3 연도별 시나리오 합산**")
+            st.dataframe(yearly_v3_fut.style.format(_dynamic_fmt(yearly_v3_fut, 'Year')),
                          use_container_width=True, hide_index=True)
 
-            csv_future_v3 = future_df_c[v3_fut_cols].to_csv(index=False).encode('utf-8-sig')
+            st.markdown("**🗂️ Ver3 월별 시나리오**")
+            st.dataframe(future_df_c[v3_fut_cols].rename(columns={'검침기온': '예상검침기온'})
+                         .style.format(fmt_v3_fut, na_rep='-'),
+                         use_container_width=True, hide_index=True)
+
+            csv_future_v3 = future_df_c[v3_fut_cols].rename(columns={'검침기온': '예상검침기온'}) \
+                .to_csv(index=False).encode('utf-8-sig')
             st.download_button("📥 Ver3 미래 시나리오 다운로드", data=csv_future_v3,
                                file_name="냉방용_Ver3_미래시나리오.csv", mime="text/csv")
     else:
