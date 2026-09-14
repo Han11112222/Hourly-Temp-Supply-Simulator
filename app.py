@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.graph_objects as go
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LinearRegression
 from sklearn.pipeline import make_pipeline
@@ -13,6 +14,48 @@ st.set_page_config(page_title="도시가스 공급량 시뮬레이터", layout="
 
 st.title("🔥 DSE 공급량 예측 모델 _ 정밀기온(HDD/CDD) 활용 ver")
 st.markdown("과거 기상 및 공급량 데이터를 기반으로 AI 모델의 **적합도(R²)**를 검증하고, 이를 바탕으로 **미래의 공급량 시나리오**를 추정합니다.")
+
+# ==========================================
+# 공통: 범례 클릭으로 라인을 껐다 켰다 할 수 있는 인터랙티브 차트
+# (st.line_chart는 범례 클릭 토글을 지원하지 않아 Plotly로 통일)
+# ==========================================
+LINE_COLORS = {
+    '실제_공급량합계':     "#1f4e9c",
+    '방법1_예측(정밀)':    "#2ecc71",
+    '방법2_예측(단순)':    "#f39c12",
+    '냉방용_판매량':       "#1f4e9c",
+    '예측_판매량':         "#66b2ff",
+    '예측_판매량_v2':      "#e74c3c",
+    '판매량_계획':         "#f1948a",
+}
+
+
+def render_line_chart(df, x_col, y_cols, height=420, title=None):
+    """
+    범례를 클릭하면 해당 라인을 껐다 켰다 할 수 있는 인터랙티브 라인차트.
+    df: x_col을 포함한 DataFrame (set_index 하지 않은 상태로 전달)
+    y_cols: 그릴 컬럼 이름 리스트 (df에 없는 컬럼은 자동으로 건너뜀)
+    """
+    fig = go.Figure()
+    for col in y_cols:
+        if col not in df.columns:
+            continue
+        fig.add_trace(go.Scatter(
+            x=df[x_col], y=df[col], mode="lines+markers", name=col,
+            line=dict(color=LINE_COLORS.get(col), width=2.2),
+            marker=dict(size=5),
+        ))
+    fig.update_layout(
+        height=height,
+        margin=dict(t=40 if title else 10, b=10, l=50, r=20),
+        title=title,
+        hovermode="x unified",
+        yaxis=dict(rangemode="tozero", tickformat=","),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+    )
+    st.plotly_chart(fig, use_container_width=True, config=dict(displaylogo=False))
+
 
 # ==========================================
 # 공통: 방법2용 구글시트 일별 평균기온 → 월별 평균 집계
@@ -466,10 +509,9 @@ $y = {coef_c[2]:.2f}x^3 {coef_c[1]:+.2f}x^2 {coef_c[0]:+.2f}x {inter_c:+.0f}$
              '판매량_계획': "{:,.0f}", '예측_계획_차이': "{:,.0f}", '예측_계획_오차율(%)': "{:.1f}%"}
 
     chart_cols_eval = [TARGET, '예측_판매량'] + (['판매량_계획'] if has_plan_eval else [])
-    st.line_chart(monthly_eval_c.set_index('Year_Month')[chart_cols_eval],
-                  use_container_width=True, height=420)
+    render_line_chart(monthly_eval_c, 'Year_Month', chart_cols_eval, height=420)
     if has_plan_eval:
-        st.caption("🟦 냉방용_판매량(실적) · 🟨 예측_판매량(신규 검침기온 Poly-3) · 🟩 판매량_계획(기존 계획, 상품별판매량 계획 시트)")
+        st.caption("🟦 냉방용_판매량(실적) · 🟨 예측_판매량(신규 검침기온 Poly-3) · 🟩 판매량_계획(기존 계획, 상품별판매량 계획 시트) — 범례 클릭 시 라인 표시/숨김")
 
     eval_show_cols = ['Year_Month', TARGET, '예측_판매량', '차이', '오차율(%)']
     if has_plan_eval:
@@ -562,10 +604,9 @@ $y = {cs[2]:.2f}x^3 {cs[1]:+.2f}x^2 {cs[0]:+.2f}x {isu:+.0f}$
                 monthly_eval_c[['Year_Month', '판매량_계획']], on='Year_Month', how='left')
 
         chart_cols_v2 = [TARGET, '예측_판매량', '예측_판매량_v2'] + (['판매량_계획'] if has_plan_eval else [])
-        st.line_chart(monthly_eval_v2.set_index('Year_Month')[chart_cols_v2],
-                      use_container_width=True, height=420)
-        st.caption("🟦 실적 · 🟨 예측_판매량(Ver1 단일 3차식) · 🟩 예측_판매량_v2(Ver2 동절기/하절기 분리)"
-                   + (" · 🟥 판매량_계획" if has_plan_eval else ""))
+        render_line_chart(monthly_eval_v2, 'Year_Month', chart_cols_v2, height=420)
+        st.caption("🟦 실적 · 🟨 예측_판매량(Ver1 단일 3차식) · 🟥 예측_판매량_v2(Ver2 동절기/하절기 분리)"
+                   + (" · 🌸 판매량_계획" if has_plan_eval else "") + " — 범례 클릭 시 라인 표시/숨김")
 
         fmt_v2 = {TARGET: "{:,.0f}", '예측_판매량': "{:,.0f}", '예측_판매량_v2': "{:,.0f}",
                   'Ver2_차이': "{:,.0f}", 'Ver2_오차율(%)': "{:.1f}%", '판매량_계획': "{:,.0f}"}
@@ -620,11 +661,10 @@ $y = {cs[2]:.2f}x^3 {cs[1]:+.2f}x^2 {cs[0]:+.2f}x {isu:+.0f}$
                    f"({min(sim_base_years_c)}~{max(sim_base_years_c)}) 동월 검침기온 평균 사용")
 
         chart_cols_c = ['예측_판매량'] + ([TARGET] if has_actual else []) + (['판매량_계획'] if has_plan_future else [])
-        st.line_chart(future_df_c.set_index('Year_Month')[chart_cols_c],
-                      use_container_width=True, height=420)
+        render_line_chart(future_df_c, 'Year_Month', chart_cols_c, height=420)
         if has_plan_future:
-            st.caption("🟨 예측_판매량(신규 검침기온 Poly-3) · 🟩 판매량_계획(기존 계획)"
-                       + (" · 🟦 냉방용_판매량(실적)" if has_actual else ""))
+            st.caption("🟨 예측_판매량(신규 검침기온 Poly-3) · 🌸 판매량_계획(기존 계획)"
+                       + (" · 🟦 냉방용_판매량(실적)" if has_actual else "") + " — 범례 클릭 시 라인 표시/숨김")
 
         show_cols = ['Year_Month', '검침기온', '예측_판매량']
         if has_actual:
@@ -667,10 +707,10 @@ $y = {cs[2]:.2f}x^3 {cs[1]:+.2f}x^2 {cs[0]:+.2f}x {isu:+.0f}$
 
             chart_cols_v2_fut = ['예측_판매량', '예측_판매량_v2'] \
                 + ([TARGET] if has_actual else []) + (['판매량_계획'] if has_plan_future else [])
-            st.line_chart(future_df_c.set_index('Year_Month')[chart_cols_v2_fut],
-                          use_container_width=True, height=420)
-            st.caption("🟨 예측_판매량(Ver1) · 🟩 예측_판매량_v2(Ver2 동절기/하절기 분리)"
-                       + (" · 🟦 실적" if has_actual else "") + (" · 🟥 판매량_계획" if has_plan_future else ""))
+            render_line_chart(future_df_c, 'Year_Month', chart_cols_v2_fut, height=420)
+            st.caption("🟨 예측_판매량(Ver1) · 🟥 예측_판매량_v2(Ver2 동절기/하절기 분리)"
+                       + (" · 🟦 실적" if has_actual else "") + (" · 🌸 판매량_계획" if has_plan_future else "")
+                       + " — 범례 클릭 시 라인 표시/숨김")
 
             v2_fut_cols = ['Year_Month', '검침기온', '예측_판매량', '예측_판매량_v2']
             if has_actual:
@@ -992,7 +1032,8 @@ with col_m2:
     """)
 
 chart_cols_eval = ['실제_공급량합계', '방법1_예측(정밀)', '방법2_예측(단순)']
-st.line_chart(monthly_eval.set_index('Year_Month')[chart_cols_eval], use_container_width=True, height=550)
+render_line_chart(monthly_eval, 'Year_Month', chart_cols_eval, height=550)
+st.caption("범례 클릭 시 라인 표시/숨김")
 
 st.subheader("🗂️ 월별 적합도 상세 리포트 (예측 차이 비교)")
 display_eval_df = monthly_eval[['Year_Month', '실제_공급량합계', '방법1_예측(정밀)', '방법1_차이', '방법1_오차율(%)', '방법2_예측(단순)', '방법2_차이', '방법2_오차율(%)']]
@@ -1024,7 +1065,8 @@ st.warning(f"""
 
 chart_cols_future = ['실제_공급량합계', '방법1_예측(정밀)', '방법2_예측(단순)']
 available_chart_cols = [c for c in chart_cols_future if c in monthly_future.columns]
-st.line_chart(monthly_future.set_index('Year_Month')[available_chart_cols], use_container_width=True, height=550)
+render_line_chart(monthly_future, 'Year_Month', available_chart_cols, height=550)
+st.caption("범례 클릭 시 라인 표시/숨김")
 
 st.subheader("🗂️ 월별 데이터 요약 리포트")
 display_monthly_future = monthly_future[['Year_Month', '실제_공급량합계', '방법1_예측(정밀)', '방법1_차이', '방법1_오차율(%)', '방법2_예측(단순)', '방법2_차이', '방법2_오차율(%)']] \
