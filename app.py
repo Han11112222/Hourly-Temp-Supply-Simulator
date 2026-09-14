@@ -36,7 +36,7 @@ SERIES_LABELS = {
     '냉방용_판매량':  '실적',
     '예측_판매량':    '기존 단일 3차식',
     '예측_판매량_v2': '분리·3차식(참고)',
-    '예측_판매량_v3': '채택모델(분리·2차식)',
+    '예측_판매량_v3': '분리·2차식',
     '판매량_계획':    '판매량 계획',
 }
 
@@ -69,6 +69,25 @@ def render_line_chart(df, x_col, y_cols, height=420, title=None):
         layout_kwargs["title"] = title
     fig.update_layout(**layout_kwargs)
     st.plotly_chart(fig, use_container_width=True, config=dict(displaylogo=False))
+
+
+def render_r2_mae_card(col, label, r2, mae, delta_r2=None):
+    """R²와 MAE를 같은 줄에 동일한 크기로 나란히 보여주는 카드. delta_r2가 있으면 그 아래 작게 개선폭 표시."""
+    delta_html = ""
+    if delta_r2 is not None:
+        color = "#16a34a" if delta_r2 >= 0 else "#dc2626"
+        arrow = "↑" if delta_r2 >= 0 else "↓"
+        sign = "+" if delta_r2 >= 0 else ""
+        delta_html = (f'<div style="font-size:0.85rem;color:{color};margin-top:4px;">'
+                      f'{arrow} {sign}{delta_r2:.4f}</div>')
+    col.markdown(f"""
+<div style="font-size:0.8rem;color:#666;margin-bottom:2px;">{label}</div>
+<div style="display:flex;align-items:baseline;gap:1rem;flex-wrap:wrap;">
+  <span style="font-size:1.9rem;font-weight:700;color:#1f2937;">{r2:.4f}</span>
+  <span style="font-size:1.9rem;font-weight:700;color:#1f2937;">MAE {mae:,.0f}</span>
+</div>
+{delta_html}
+""", unsafe_allow_html=True)
 
 
 # ==========================================
@@ -618,15 +637,15 @@ ${poly_eq_str(cs, isu)}$
         selected_eval = all_series_eval
 
     mcols = st.columns(3 if has_cubic_split else 2)
-    mcols[0].metric("기존 단일 3차식 R²", f"{r2_base_eval:.4f}", delta=f"MAE {mae_base_eval:,.0f}")
+    render_r2_mae_card(mcols[0], "기존 단일 3차식", r2_base_eval, mae_base_eval)
     if has_cubic_split:
-        mcols[1].metric("분리·3차식 R² (참고)", f"{r2_cubic_eval:.4f}",
-                        delta=f"{r2_cubic_eval - r2_base_eval:+.4f} (MAE {mae_cubic_eval:,.0f})")
-        mcols[2].metric("✅ 채택모델(분리·2차식) R²", f"{r2_final_eval:.4f}",
-                        delta=f"{r2_final_eval - r2_base_eval:+.4f} (MAE {mae_final_eval:,.0f})")
+        render_r2_mae_card(mcols[1], "분리·3차식 (참고)", r2_cubic_eval, mae_cubic_eval,
+                           delta_r2=r2_cubic_eval - r2_base_eval)
+        render_r2_mae_card(mcols[2], "✅ 분리·2차식", r2_final_eval, mae_final_eval,
+                           delta_r2=r2_final_eval - r2_base_eval)
     else:
-        mcols[1].metric("✅ 채택모델(분리·2차식) R²", f"{r2_final_eval:.4f}",
-                        delta=f"{r2_final_eval - r2_base_eval:+.4f} (MAE {mae_final_eval:,.0f})")
+        render_r2_mae_card(mcols[1], "✅ 분리·2차식", r2_final_eval, mae_final_eval,
+                           delta_r2=r2_final_eval - r2_base_eval)
 
     render_line_chart(monthly_eval_c, 'Year_Month', selected_eval, height=420)
 
