@@ -459,6 +459,7 @@ def _build_diff_table(df, x_col, target_col, selected_cols):
 
 def render_cooling_analysis():
     st.header("🧊 냉방용 사용량 분석 심화ver")
+    st.markdown("- 전월16일 ~ 당월15일 실제기온 평균 적용 (세 가지 모델 모두 공통)")
 
     with st.spinner("냉방용 데이터를 불러오는 중입니다..."):
         daily_temp_df = load_daily_temp_for_cooling()
@@ -470,7 +471,7 @@ def render_cooling_analysis():
             lambda r: f"{int(r['Year'])}-{int(r['Month']):02d}", axis=1)
 
     if merged_cool.empty:
-        st.warning("검침기온과 판매량 데이터의 겹치는 기간이 없습니다.")
+        st.warning("실제기온과 판매량 데이터의 겹치는 기간이 없습니다.")
         st.stop()
 
     TARGET = '냉방용_판매량'
@@ -490,7 +491,7 @@ def render_cooling_analysis():
         options=list(range(max_year_c + 1, max_year_c + 6)),
         default=[max_year_c + 1, max_year_c + 2], key="cool_future_years")
     y_years_c = st.sidebar.slider(
-        "4. 미래 검침기온 추정 기준 (최근 Y년 평균, 냉방용)",
+        "4. 미래 예측기온 추정 기준 (최근 Y년 평균, 냉방용)",
         min_value=1, max_value=10, value=3, step=1, key="cool_y_years")
     sim_base_years_c = list(range(max_year_c - y_years_c + 1, max_year_c + 1))
 
@@ -507,15 +508,16 @@ def render_cooling_analysis():
     # ══════════════════════════════════════════
     st.markdown("---")
     st.markdown(f"""
-**1. 단순 3차 다항식** — 검침기온(전월16일~당월15일 평균) 하나로 3차식 학습. 겨울·여름 두 번 꺾이는
-패턴을 한 곡선에 억지로 담다 보니 하절기에서 과대예측(overshoot) 발생
+**1. 일반적인 3차 다항식 적용**
+(단점: 겨울·여름 두 번 꺾이는 패턴을 한 곡선에 억지로 담다 보니 하절기에서 과대예측(overshoot) 발생)
 
-**2. 동절기/하절기 분리 (HDD {WINTER_T:.0f}℃ / CDD {SUMMER_T:.0f}℃ 적용)** — 검침기온
-{WINTER_T:.0f}℃ 이하는 동절기 모델, {SUMMER_T:.0f}℃ 이상은 하절기 모델로 각각 학습하고,
+**2. 동절기/하절기 분리 (HDD {WINTER_T:.0f}℃ / CDD {SUMMER_T:.0f}℃ 적용)**
+실제기온 {WINTER_T:.0f}℃ 이하는 동절기 모델, {SUMMER_T:.0f}℃ 이상은 하절기 모델로 각각 학습하고,
 그 사이 구간은 두 모델의 경계값을 선형보간해 연결 (중복계상 방지)
 
-**3. 왜 2차식인가** — 하절기는 학습 표본이 적어 3차식은 계수가 불안정해지고 과적합 위험이 있음 →
-동절기·하절기 모두 2차식으로 낮춰 예측을 안정화 (아래 R² 비교로 실제 개선 효과 확인 가능)
+**3. 추가 모델 (2차식)**
+하절기는 학습 표본이 적어 3차식은 계수가 불안정해지고 과적합 위험이 있어, 동절기·하절기 모두
+2차식으로 낮춰 예측을 안정화한 모델을 추가로 제공합니다 (아래 R² 비교로 개선 효과 확인 가능)
 """)
 
     # 기준모델(단일 3차식) — 비교 지표용으로만 사용, 별도 섹션은 만들지 않음
@@ -547,7 +549,7 @@ def render_cooling_analysis():
     col_w, col_s = st.columns(2)
     with col_w:
         st.info(f"""
-**❄️ 동절기 모델 (검침기온 ≤ {WINTER_T:.0f}℃, n={len(winter_data_f)}, 2차식)**
+**❄️ 동절기 모델 (실제기온 ≤ {WINTER_T:.0f}℃, n={len(winter_data_f)}, 2차식)**
 
 학습 R² = {r2_w * 100:.2f}%
 
@@ -555,7 +557,7 @@ ${poly_eq_str(cw, iw)}$
 """)
     with col_s:
         st.info(f"""
-**☀️ 하절기 모델 (검침기온 ≥ {SUMMER_T:.0f}℃, n={len(summer_data_f)}, 2차식)**
+**☀️ 하절기 모델 (실제기온 ≥ {SUMMER_T:.0f}℃, n={len(summer_data_f)}, 2차식)**
 
 학습 R² = {r2_s * 100:.2f}%
 
@@ -564,8 +566,8 @@ ${poly_eq_str(cs, isu)}$
     st.caption(f"※ {WINTER_T:.0f}~{SUMMER_T:.0f}℃ 구간은 두 모델의 경계값을 선형보간하여 연결(중복계상 방지) "
                f"· 기온 소스: 구글시트 일별 기온 → 검침기간(전월16일~당월15일) 평균 · 판매량 소스: 판매량 실적 시트 — 냉방용")
 
-    with st.expander("🔎 검침기온 ↔ 냉방용 판매량 산점도 (학습 데이터)"):
-        st.scatter_chart(train_df_c, x='검침기온', y=TARGET, height=380)
+    with st.expander("🔎 실제기온 ↔ 냉방용 판매량 산점도 (학습 데이터)"):
+        st.scatter_chart(train_df_c.rename(columns={'검침기온': '실제기온'}), x='실제기온', y=TARGET, height=380)
 
     # ══════════════════════════════════════════
     # 과거 적합도 검증
@@ -664,8 +666,8 @@ ${poly_eq_str(cs, isu)}$
             future_df_c = pd.merge(future_df_c, plan_df, on=['Year', 'Month'], how='left')
             has_plan_future = future_df_c['판매량_계획'].notna().any()
 
-        st.caption(f"미래 검침기온 추정: 최근 {y_years_c}개년"
-                   f"({min(sim_base_years_c)}~{max(sim_base_years_c)}) 동월 검침기온 평균 사용")
+        st.caption(f"미래 예측기온 추정: 최근 {y_years_c}개년"
+                   f"({min(sim_base_years_c)}~{max(sim_base_years_c)}) 동월 실제기온 평균 사용")
 
         chart_cols_fut = ['예측_판매량', '예측_판매량_v3'] + ([TARGET] if has_actual else [])             + (['판매량_계획'] if has_plan_future else [])
         render_line_chart(future_df_c, 'Year_Month', chart_cols_fut, height=420)
@@ -682,9 +684,9 @@ ${poly_eq_str(cs, isu)}$
                      use_container_width=True, hide_index=True)
 
         show_cols = ['Year_Month', '검침기온'] + agg_cols_fut
-        disp_future = future_df_c[show_cols].rename(columns={'검침기온': '예상검침기온'})
+        disp_future = future_df_c[show_cols].rename(columns={'검침기온': '예측기온'})
         fmt_disp_future = _dynamic_fmt(disp_future, 'Year_Month')
-        fmt_disp_future['예상검침기온'] = "{:.1f}℃"
+        fmt_disp_future['예측기온'] = "{:.1f}℃"
         st.markdown("**🗂️ 월별 시나리오**")
         st.dataframe(disp_future.style.format(fmt_disp_future, na_rep='-'),
                      use_container_width=True, hide_index=True)
