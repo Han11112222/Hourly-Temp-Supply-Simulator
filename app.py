@@ -25,7 +25,7 @@ LINE_COLORS = {
     '실제_공급량합계':     "#1f4e9c",
     '방법1_예측(정밀)':    "#2ecc71",
     '방법2_예측(단순)':    "#f39c12",
-    '냉방용_판매량':       "#1f4e9c",
+    '판매량_실적':       "#1f4e9c",
     '예측_판매량_v1':         "#66b2ff",
     '예측_판매량_v2':      "#e74c3c",
     '예측_판매량_v3':      "#8e44ad",
@@ -33,7 +33,7 @@ LINE_COLORS = {
 }
 
 SERIES_LABELS = {
-    '냉방용_판매량':  '실적',
+    '판매량_실적':  '실적',
     '예측_판매량_v1':    '기존 단일 3차식',
     '예측_판매량_v2': '분리·3차식(참고)',
     '예측_판매량_v3': '분리·2차식',
@@ -348,7 +348,7 @@ def load_cooling_sales():
     out['Year']  = out['Year'].astype(int)
     out['Month'] = out['Month'].astype(int)
     out = out[out[cooling_col] > 0].reset_index(drop=True)
-    return out.rename(columns={cooling_col: '냉방용_판매량'})
+    return out.rename(columns={cooling_col: '판매량_실적'})
 
 
 @st.cache_data
@@ -386,7 +386,7 @@ def load_cooling_plan():
     return out.rename(columns={plan_col: '판매량_계획'})
 
 
-def fit_piecewise_seasonal_models(train_df, x_col='검침기온', y_col='냉방용_판매량', degree=3):
+def fit_piecewise_seasonal_models(train_df, x_col='검침기온', y_col='판매량_실적', degree=3):
     """
     검침기온 기준 동절기(≤WINTER_T)/하절기(≥SUMMER_T) 데이터를 각각 나눠
     별도의 다항식 모델을 학습한다. (이중계상 방지를 위해 중간구간 데이터는 학습에서 제외,
@@ -457,34 +457,94 @@ def poly_eq_str(coefs, intercept):
 
 
 def _dynamic_fmt(df, x_col):
-    """df의 x_col을 제외한 모든 컬럼에 대해, '오차율'이 들어간 컬럼은 %, 나머지는 천단위 콤마로 포맷."""
+    """df의 x_col을 제외한 모든 컬럼에 대해 포맷을 자동 결정한다.
+    '오차율'이 들어간 컬럼은 %, '기온'이 들어간 컬럼은 소수 1자리+℃, 나머지는 천단위 콤마."""
     fmt = {}
     for c in df.columns:
         if c == x_col:
             continue
-        fmt[c] = "{:.1f}%" if '오차율' in c else "{:,.0f}"
+        if '오차율' in c:
+            fmt[c] = "{:.1f}%"
+        elif '기온' in c:
+            fmt[c] = "{:.1f}℃"
+        else:
+            fmt[c] = "{:,.0f}"
     return fmt
+
+
+def _apply_mae_toggle(df, x_col, use_abs):
+    """use_abs=True면 '차이'/'오차율' 컬럼을 절대값으로 바꾸고, '차이' 컬럼명은 'MAE'로 바꿔 표시한다."""
+    if not use_abs:
+        return df
+    out = df.copy()
+    rename_map = {}
+    for c in out.columns:
+        if c == x_col:
+            continue
+        if '차이' in c:
+            out[c] = out[c].abs()
+            rename_map[c] = c.replace('차이', 'MAE')
+        elif '오차율' in c:
+            out[c] = out[c].abs()
+    if rename_map:
+        out = out.rename(columns=rename_map)
+    return out
+
+
+def render_diff_table(df, x_col, target_col=None, key_prefix="tbl"):
+    """
+    비교표 렌더링 공통 헬퍼.
+    - 좌측 상단에 'MAE 변환' 토글(체크박스)을 두고, 켜면 차이 컬럼을 절대값(MAE 스타일)으로 표시
+    - x_col(구분 열)과 target_col(실적 등 기준 열)에 배경색 하이라이트 적용
+    """
+    use_mae = st.checkbox("📌 차이를 절대값(MAE)으로 표시", key=f"{key_prefix}_mae_toggle")
+    disp = _apply_mae_toggle(df, x_col, use_mae)
+    fmt = _dynamic_fmt(disp, x_col)
+    styler = disp.style.format(fmt, na_rep='-')
+    styler = styler.set_properties(subset=[x_col], **{'background-color': '#eef2f7', 'font-weight': '600'})
+    if target_col and target_col in disp.columns:
+        styler = styler.set_properties(subset=[target_col], **{'background-color': '#dbeafe', 'font-weight': '600'})
+    st.dataframe(styler, use_container_width=True, hide_index=True)
 
 
 def _build_diff_table(df, x_col, target_col, selected_cols, target_label=None):
     """
-    df에서 x_col + selected_cols(원본값 컬럼)만 뽑아 표를 만들고,
-    target_col이 selected_cols에 포함돼 있으면 나머지 선택 시리즈마다
-    target 대비 '_{기준}대비차이' / '_{기준}대비오차율(%)' 컬럼을 자동으로 추가한다.
-    target_label을 안 주면 SERIES_LABELS에서 target_col의 한글 라벨을 찾아 사용한다
-    (예: TARGET → '실적') — 컬럼명만 보고도 무엇과 비교한 차이인지 바로 알 수 있게 하기 위함.
+    df에서 x_col + selected_cols(원본값 컬럼)로 표를 만든다.
+    컬럼 순서는 selected_cols 순서를 따르되, target_col(예: 실적)이 먼저 나온 컬럼들의
+    차이/오차율은 target_col 바로 뒤로 몰아서 보여주고, target_col 이후에 나오는 컬럼들은
+    (원본값 → 차이 → 오차율) 세트로 바로 이어 붙인다.
+    예) selected_cols=[계획, 실적, v1, v2] → 계획, 실적, 계획_실적대비차이, 계획_실적대비오차율(%),
+        v1, v1_실적대비차이, v1_실적대비오차율(%), v2, v2_실적대비차이, v2_실적대비오차율(%)
+    target_label을 안 주면 SERIES_LABELS에서 target_col의 한글 라벨을 찾아 사용한다.
     """
     cols = [c for c in selected_cols if c in df.columns]
-    out = df[[x_col] + cols].copy()
-    if target_col in cols:
-        label = target_label or SERIES_LABELS.get(target_col, target_col)
-        for c in cols:
-            if c == target_col:
-                continue
-            out[f'{c}_{label}대비차이'] = out[c] - out[target_col]
-            with np.errstate(divide='ignore', invalid='ignore'):
-                out[f'{c}_{label}대비오차율(%)'] = np.where(
-                    out[target_col] != 0, out[f'{c}_{label}대비차이'] / out[target_col] * 100, np.nan)
+    has_target = target_col in cols
+    label = target_label or SERIES_LABELS.get(target_col, target_col)
+
+    out = pd.DataFrame({x_col: df[x_col]})
+    pending_before_target = []  # target보다 먼저 선택된 비교 대상 컬럼 (차이 계산을 target 등장 후로 미룸)
+    target_seen = False
+
+    def _add_diff(colname):
+        out[f'{colname}_{label}대비차이'] = df[colname] - df[target_col]
+        with np.errstate(divide='ignore', invalid='ignore'):
+            out[f'{colname}_{label}대비오차율(%)'] = np.where(
+                df[target_col] != 0, out[f'{colname}_{label}대비차이'] / df[target_col] * 100, np.nan)
+
+    for c in cols:
+        out[c] = df[c]
+        if c == target_col:
+            target_seen = True
+            for pc in pending_before_target:
+                _add_diff(pc)
+            continue
+        if not has_target:
+            continue
+        if not target_seen:
+            pending_before_target.append(c)
+        else:
+            _add_diff(c)
+    return out
     return out
 
 
@@ -505,7 +565,7 @@ def render_cooling_analysis():
         st.warning("실제기온과 판매량 데이터의 겹치는 기간이 없습니다.")
         st.stop()
 
-    TARGET = '냉방용_판매량'
+    TARGET = '판매량_실적'
     all_years_cool = sorted(merged_cool['Year'].unique())
 
     st.sidebar.markdown("---")
@@ -667,13 +727,11 @@ ${poly_eq_str(cs, isu)}$
     yearly_agg_eval = monthly_eval_c.groupby('Year')[all_series_eval].sum().reset_index()
     yearly_table_eval = _build_diff_table(yearly_agg_eval, 'Year', TARGET, selected_eval)
     st.markdown("**📆 연도별 실적 대비 차이 요약**")
-    st.dataframe(yearly_table_eval.style.format(_dynamic_fmt(yearly_table_eval, 'Year')),
-                 use_container_width=True, hide_index=True)
+    render_diff_table(yearly_table_eval, 'Year', target_col=TARGET, key_prefix="eval_yearly")
 
     monthly_table_eval = _build_diff_table(monthly_eval_c, 'Year_Month', TARGET, selected_eval)
     st.markdown("**🗂️ 월별 상세 비교**")
-    st.dataframe(monthly_table_eval.style.format(_dynamic_fmt(monthly_table_eval, 'Year_Month')),
-                 use_container_width=True, hide_index=True)
+    render_diff_table(monthly_table_eval, 'Year_Month', target_col=TARGET, key_prefix="eval_monthly")
 
     dl_eval1, dl_eval2 = st.columns(2)
     with dl_eval1:
@@ -737,20 +795,18 @@ ${poly_eq_str(cs, isu)}$
             st.info("표시할 항목을 1개 이상 선택해주세요. 우선 전체 항목을 표시합니다.")
             selected_fut = agg_cols_fut
 
+        future_target_col = TARGET if has_actual else '예측_판매량_v3'
         yearly_future_c = future_df_c.groupby('Year')[agg_cols_fut].sum().reset_index()
-        yearly_future_c = _build_diff_table(
-            yearly_future_c, 'Year', TARGET if has_actual else '예측_판매량_v3', selected_fut)
+        yearly_future_c = _build_diff_table(yearly_future_c, 'Year', future_target_col, selected_fut)
         st.markdown("**📆 연도별 시나리오 합산**")
-        st.dataframe(yearly_future_c.style.format(_dynamic_fmt(yearly_future_c, 'Year')),
-                     use_container_width=True, hide_index=True)
+        render_diff_table(yearly_future_c, 'Year', target_col=future_target_col, key_prefix="future_yearly")
 
         show_cols = ['Year_Month', '검침기온'] + selected_fut
         disp_future = future_df_c[show_cols].rename(columns={'검침기온': '예측기온'})
-        fmt_disp_future = _dynamic_fmt(disp_future, 'Year_Month')
-        fmt_disp_future['예측기온'] = "{:.1f}℃"
         st.markdown("**🗂️ 월별 시나리오**")
-        st.dataframe(disp_future.style.format(fmt_disp_future, na_rep='-'),
-                     use_container_width=True, hide_index=True)
+        render_diff_table(disp_future, 'Year_Month',
+                          target_col=TARGET if TARGET in disp_future.columns else None,
+                          key_prefix="future_monthly")
 
         csv_future_c = disp_future.to_csv(index=False).encode('utf-8-sig')
         st.download_button("📥 냉방용 미래 시나리오 다운로드", data=csv_future_c,
