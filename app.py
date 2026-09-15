@@ -554,6 +554,13 @@ def _fmt_diff_value(col, val):
         return str(val)
 
 
+def _fmt_x_value(val):
+    """구분 열(Year 등) 표시용. 정수형 float(예: 2023.0)이면 '.0'을 떼고 정수로 보여준다."""
+    if isinstance(val, float) and val == int(val):
+        return str(int(val))
+    return str(val)
+
+
 def render_html_diff_table(df, x_col, target_col=None):
     """
     표를 HTML 테이블로 렌더링한다 (st.dataframe은 헤더 줄바꿈을 지원하지 않아 텍스트가
@@ -573,7 +580,7 @@ def render_html_diff_table(df, x_col, target_col=None):
     body = ""
     for _, row in df.iterrows():
         cells = "".join(
-            f"<td{_cls(c)}>{row[c] if c == x_col else _fmt_diff_value(c, row[c])}</td>" for c in cols)
+            f"<td{_cls(c)}>{_fmt_x_value(row[c]) if c == x_col else _fmt_diff_value(c, row[c])}</td>" for c in cols)
         body += f"<tr>{cells}</tr>"
 
     st.markdown(f"""{_DIFF_TABLE_CSS}
