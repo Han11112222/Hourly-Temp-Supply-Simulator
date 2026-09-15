@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import re
 import plotly.graph_objects as go
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LinearRegression
@@ -29,6 +30,7 @@ LINE_COLORS = {
     '예측_판매량_v1':         "#66b2ff",
     '예측_판매량_v2':      "#f39c12",
     '예측_판매량_v3':      "#8e44ad",
+    '공급량_계획':         "#0d9488",
     '판매량_계획':         "#f1948a",
     '검침기온':           "#059669",
 }
@@ -38,6 +40,7 @@ SERIES_LABELS = {
     '예측_판매량_v1':    '기존 단일 3차식',
     '예측_판매량_v2': '분리·3차식(참고)',
     '예측_판매량_v3': '분리·2차식',
+    '공급량_계획':    '공급량 계획',
     '판매량_계획':    '판매량 계획',
 }
 
@@ -280,6 +283,7 @@ def load_and_preprocess_heating_data(monthly_temp_df):
 
 SALES_SHEET_URL = "https://docs.google.com/spreadsheets/d/1-8RIPIkjnVXxoh5QJs6598nnHkWOGmrO655jr3b3g04/export?format=csv&gid=0"
 PLAN_SHEET_URL = "https://docs.google.com/spreadsheets/d/1zu2R21_P6z6yCeWz7yX1K6IYhj541hcr3IvCAaHLEQ8/export?format=csv&gid=0"
+SUPPLY_PLAN_SHEET_URL = "https://docs.google.com/spreadsheets/d/1PSzKts5lL_zNNi_vfKlW1CdNZasTA-jBj_UCNEtu-x0/export?format=csv&gid=0"
 
 # ── Ver2(동절기/하절기 분리 모델)용 기준온도 — 기존 HDD/CDD 기준과 동일 ──
 WINTER_T = 18.0  # 검침기온 ≤ 18℃ → 동절기 모델 (HDD 기준온도)
@@ -401,6 +405,67 @@ def load_cooling_plan():
     out['Year']  = out['Year'].astype(int)
     out['Month'] = out['Month'].astype(int)
     return out.rename(columns={plan_col: '판매량_계획'})
+
+
+@st.cache_data
+def load_supply_plan():
+    """
+    '상품별공급량계획' 구글시트 — 냉난방(냉방) 월별 공급량 계획(GJ) 로드.
+    (마케팅팀이 빌링팀에 넘기기 전, 원래 수립한 공급량 계획. 빌링팀이 비율을 적용해
+    최종 확정하는 '판매량_계획'과는 다른 수치라 특정월 괴리를 비교하기 위한 용도)
+    시트 상단 제목(예: "2. 2026년 계획(normal)")에서 연도를 자동 파싱하고,
+    '냉난방' 행을 찾아 C~N열(1~12월)을 그 연도의 월별 값으로 사용한다.
+    """
+    try:
+        raw = pd.read_csv(SUPPLY_PLAN_SHEET_URL, header=None)
+    except Exception as e:
+        st.sidebar.warning(f"⚠️ 공급량 계획 시트 로드 실패: {e} (공급량 계획 비교 생략)")
+        return None
+
+    # 제목 행에서 "2026년" 같은 4자리 연도 파싱 (상단 몇 줄만 탐색)
+    year_val = None
+    for r in range(min(6, len(raw))):
+        for c in range(min(6, raw.shape[1])):
+            val = raw.iat[r, c]
+            if pd.isna(val):
+                continue
+            m = re.search(r'(20\d{2})\s*년', str(val))
+            if m:
+                year_val = int(m.group(1))
+                break
+        if year_val is not None:
+            break
+    if year_val is None:
+        st.sidebar.warning("공급량 계획 시트에서 연도를 찾을 수 없어 공급량 계획 비교를 생략합니다.")
+        return None
+
+    # '냉난방'(또는 '냉방') 행 탐색 — A/B/C열 정도만 확인
+    target_row = None
+    for r in range(len(raw)):
+        for c in range(min(3, raw.shape[1])):
+            val = raw.iat[r, c]
+            if pd.isna(val):
+                continue
+            sval = str(val)
+            if '냉난방' in sval or '냉방' in sval:
+                target_row = r
+                break
+        if target_row is not None:
+            break
+    if target_row is None:
+        st.sidebar.warning("공급량 계획 시트에서 '냉난방' 행을 찾을 수 없어 공급량 계획 비교를 생략합니다.")
+        return None
+
+    # C열(idx=2) ~ N열(idx=13) = 1~12월
+    vals = pd.to_numeric(
+        raw.iloc[target_row, 2:14].astype(str).str.replace(",", ""), errors='coerce').values
+    if len(vals) < 12 or pd.isna(vals).all():
+        st.sidebar.warning("공급량 계획 시트의 월별 값(C~N열)을 읽지 못했습니다.")
+        return None
+
+    rows = [{'Year': year_val, 'Month': m, '공급량_계획': float(vals[m - 1])}
+            for m in range(1, 13) if pd.notna(vals[m - 1])]
+    return pd.DataFrame(rows)
 
 
 def fit_piecewise_seasonal_models(train_df, x_col='검침기온', y_col='판매량_실적', degree=3):
@@ -721,6 +786,7 @@ def render_cooling_analysis():
         meter_temp_df = compute_meter_reading_temp(daily_temp_df)
         sales_df = load_cooling_sales()
         plan_df = load_cooling_plan()  # None일 수 있음 (로드 실패/컬럼 미탐지 시 계획 비교 생략)
+        supply_plan_df = load_supply_plan()  # None일 수 있음 (로드 실패/행 미탐지 시 공급량 계획 비교 생략)
         merged_cool = pd.merge(meter_temp_df, sales_df, on=['Year', 'Month'], how='inner')
         merged_cool['Year_Month'] = merged_cool.apply(
             lambda r: f"{int(r['Year'])}-{int(r['Month']):02d}", axis=1)
@@ -847,6 +913,11 @@ ${poly_eq_str(cs, isu)}$
         eval_df_c = eval_df_c.merge(plan_df, on=['Year', 'Month'], how='left')
         has_plan_eval = eval_df_c['판매량_계획'].notna().any()
 
+    has_supply_plan_eval = False
+    if supply_plan_df is not None:
+        eval_df_c = eval_df_c.merge(supply_plan_df, on=['Year', 'Month'], how='left')
+        has_supply_plan_eval = eval_df_c['공급량_계획'].notna().any()
+
     valid_eval = eval_df_c['예측_판매량_v3'].notna()
     r2_base_eval = r2_score(eval_df_c.loc[valid_eval, TARGET], eval_df_c.loc[valid_eval, '예측_판매량_v1'])
     mae_base_eval = np.mean(np.abs(eval_df_c.loc[valid_eval, '예측_판매량_v1'] - eval_df_c.loc[valid_eval, TARGET]))
@@ -868,10 +939,13 @@ ${poly_eq_str(cs, isu)}$
     monthly_eval_c = eval_df_c[['Year_Month', 'Year', 'Month', TARGET, '예측_판매량_v1', '예측_판매량_v3', '검침기온']].copy()
     if has_cubic_split:
         monthly_eval_c['예측_판매량_v2'] = eval_df_c['예측_판매량_v2']
+    if has_supply_plan_eval:
+        monthly_eval_c['공급량_계획'] = eval_df_c['공급량_계획']
     if has_plan_eval:
         monthly_eval_c['판매량_계획'] = eval_df_c['판매량_계획']
 
-    all_series_eval = (['판매량_계획'] if has_plan_eval else []) + [TARGET, '예측_판매량_v1'] \
+    all_series_eval = (['공급량_계획'] if has_supply_plan_eval else []) \
+        + (['판매량_계획'] if has_plan_eval else []) + [TARGET, '예측_판매량_v1'] \
         + (['예측_판매량_v2'] if has_cubic_split else []) + ['예측_판매량_v3']
 
     # R²/MAE 카드 목록 구성 — MAE가 가장 낮은 카드에 자동으로 ✅ 표시
@@ -961,10 +1035,17 @@ ${poly_eq_str(cs, isu)}$
             future_df_c = pd.merge(future_df_c, plan_df, on=['Year', 'Month'], how='left')
             has_plan_future = future_df_c['판매량_계획'].notna().any()
 
+        # 공급량 계획(빌링팀 반영 전 원래 계획, 상품별공급량계획 시트) 병합
+        has_supply_plan_future = False
+        if supply_plan_df is not None:
+            future_df_c = pd.merge(future_df_c, supply_plan_df, on=['Year', 'Month'], how='left')
+            has_supply_plan_future = future_df_c['공급량_계획'].notna().any()
+
         st.caption(f"미래 예측기온 추정: 최근 {y_years_c}개년"
                    f"({min(sim_base_years_c)}~{max(sim_base_years_c)}) 동월 실제기온 평균 사용")
 
-        agg_cols_fut = (['판매량_계획'] if has_plan_future else []) + ([TARGET] if has_actual else []) \
+        agg_cols_fut = (['공급량_계획'] if has_supply_plan_future else []) \
+            + (['판매량_계획'] if has_plan_future else []) + ([TARGET] if has_actual else []) \
             + ['예측_판매량_v1'] + (['예측_판매량_v2'] if has_cubic_split else []) + ['예측_판매량_v3']
 
         # 차트는 항상 전체 시리즈 표시 — 플롯리 자체 범례 클릭으로 라인 표시/숨김
