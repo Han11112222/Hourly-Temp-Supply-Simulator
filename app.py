@@ -522,23 +522,79 @@ def _ensure_baseline_cols(selected, target_col, plan_col='판매량_계획', has
     return result
 
 
+_DIFF_TABLE_CSS = """
+<style>
+.difftbl-wrap { overflow-x:auto; border:1px solid #e2e8f0; border-radius:6px; margin-bottom:0.8rem; }
+.difftbl { border-collapse:collapse; font-size:0.82rem;
+           font-family:'Segoe UI','Noto Sans KR',sans-serif; }
+.difftbl th {
+    background:#f8fafc; color:#334155; padding:6px 10px; text-align:center;
+    border:1px solid #e2e8f0; font-weight:600; white-space:normal;
+    word-break:keep-all; min-width:120px; max-width:150px; line-height:1.3;
+}
+.difftbl td { padding:5px 10px; text-align:right; border:1px solid #eef1f5; white-space:nowrap; }
+.difftbl th.difftbl-x, .difftbl td.difftbl-x { background:#eef2f7 !important; font-weight:600; }
+.difftbl td.difftbl-x { text-align:center; }
+.difftbl th.difftbl-target, .difftbl td.difftbl-target { background:#dbeafe !important; font-weight:600; }
+.difftbl tr:hover td { background:#f8fafc; }
+</style>
+"""
+
+
+def _fmt_diff_value(col, val):
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return "-"
+    if '오차율' in col or 'MAPE' in col:
+        return f"{val:.1f}%"
+    if '기온' in col:
+        return f"{val:.1f}℃"
+    try:
+        return f"{val:,.0f}"
+    except (TypeError, ValueError):
+        return str(val)
+
+
+def render_html_diff_table(df, x_col, target_col=None):
+    """
+    표를 HTML 테이블로 렌더링한다 (st.dataframe은 헤더 줄바꿈을 지원하지 않아 텍스트가
+    잘리는 문제가 있어, 컬럼명의 '\\n'을 <br>로 바꿔 풀네임을 2줄로 보여주기 위함).
+    x_col(구분 열)과 target_col(실적 등 기준 열)은 배경색으로 하이라이트한다.
+    """
+    cols = list(df.columns)
+
+    def _cls(c):
+        if c == x_col:
+            return ' class="difftbl-x"'
+        if target_col and c == target_col:
+            return ' class="difftbl-target"'
+        return ""
+
+    hdr = "".join(f"<th{_cls(c)}>{c.replace(chr(10), '<br>')}</th>" for c in cols)
+    body = ""
+    for _, row in df.iterrows():
+        cells = "".join(
+            f"<td{_cls(c)}>{row[c] if c == x_col else _fmt_diff_value(c, row[c])}</td>" for c in cols)
+        body += f"<tr>{cells}</tr>"
+
+    st.markdown(f"""{_DIFF_TABLE_CSS}
+<div class="difftbl-wrap">
+<table class="difftbl">
+<thead><tr>{hdr}</tr></thead>
+<tbody>{body}</tbody>
+</table>
+</div>""", unsafe_allow_html=True)
+
+
 def render_diff_table(df, x_col, target_col=None, key_prefix="tbl"):
     """
     비교표 렌더링 공통 헬퍼.
     - 좌측 상단에 'MAE 변환' 토글(체크박스)을 두고, 켜면 차이 컬럼을 절대값(MAE 스타일)으로 표시
     - x_col(구분 열)과 target_col(실적 등 기준 열)에 배경색 하이라이트 적용
-    - 컬럼명에 줄바꿈(\\n)이 들어간 긴 헤더(예: '예측_판매량_v1\\n실적대비MAPE(%)')는
-      2줄로 감싸 표시되고, 모든 컬럼 폭을 동일하게 맞춘다.
+    - 컬럼명에 줄바꿈(\\n)이 들어간 긴 헤더는 HTML 테이블로 렌더링해 풀네임을 2줄로 보여준다.
     """
     use_mae = st.checkbox("📌 차이를 절대값(MAE)으로 표시", key=f"{key_prefix}_mae_toggle")
     disp = _apply_mae_toggle(df, x_col, use_mae)
-    fmt = _dynamic_fmt(disp, x_col)
-    styler = disp.style.format(fmt, na_rep='-')
-    styler = styler.set_properties(subset=[x_col], **{'background-color': '#eef2f7', 'font-weight': '600'})
-    if target_col and target_col in disp.columns:
-        styler = styler.set_properties(subset=[target_col], **{'background-color': '#dbeafe', 'font-weight': '600'})
-    col_config = {c: st.column_config.Column(width="small") for c in disp.columns}
-    st.dataframe(styler, use_container_width=True, hide_index=True, column_config=col_config)
+    render_html_diff_table(disp, x_col, target_col=target_col)
 
 
 def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_prefix="tbl", target_label=None):
@@ -605,13 +661,7 @@ def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_pref
         else:
             add_diff(c)
 
-    fmt = _dynamic_fmt(out, 'Year')
-    styler = out.style.format(fmt, na_rep='-')
-    styler = styler.set_properties(subset=['Year'], **{'background-color': '#eef2f7', 'font-weight': '600'})
-    if target_col in out.columns:
-        styler = styler.set_properties(subset=[target_col], **{'background-color': '#dbeafe', 'font-weight': '600'})
-    col_config = {c: st.column_config.Column(width="small") for c in out.columns}
-    st.dataframe(styler, use_container_width=True, hide_index=True, column_config=col_config)
+    render_html_diff_table(out, 'Year', target_col=target_col)
     return out
 
 
