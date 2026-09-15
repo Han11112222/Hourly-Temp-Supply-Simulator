@@ -758,32 +758,43 @@ def render_cooling_analysis():
     x_train_c = train_df_c[['검침기온']]
     y_train_c = train_df_c[TARGET]
 
+    # 기준모델(단일 3차식) — 비교 지표용으로만 사용, 별도 섹션은 만들지 않음
+    model_base = make_pipeline(PolynomialFeatures(degree=3, include_bias=False), LinearRegression())
+    model_base.fit(x_train_c, y_train_c)
+    cb = model_base.named_steps['linearregression'].coef_
+    ib = model_base.named_steps['linearregression'].intercept_
+
+    # 분리모델(3차식) — 2차식 채택 근거 비교용 (표/차트에는 노출하지 않고 R² 지표에만 사용)
+    models_cubic, winter_data_c3, summer_data_c3 = fit_piecewise_seasonal_models(
+        train_df_c, x_col='검침기온', y_col=TARGET, degree=3)
+    has_cubic_split_eq = models_cubic['winter'] is not None and models_cubic['summer'] is not None
+    if has_cubic_split_eq:
+        cw3 = models_cubic['winter'].named_steps['linearregression'].coef_
+        iw3 = models_cubic['winter'].named_steps['linearregression'].intercept_
+        cs3 = models_cubic['summer'].named_steps['linearregression'].coef_
+        is3 = models_cubic['summer'].named_steps['linearregression'].intercept_
+
     # ══════════════════════════════════════════
     # 모델 설명 (요약)
     # ══════════════════════════════════════════
     st.markdown("---")
+    item2_eq = (f"동절기: ${poly_eq_str(cw3, iw3)}$ &nbsp;&nbsp; 하절기: ${poly_eq_str(cs3, is3)}$"
+               if has_cubic_split_eq else "")
     st.markdown(f"""
 **1. 일반적인 3차 다항식 적용**
 (단점: 겨울·여름 두 번 꺾이는 패턴을 한 곡선에 억지로 담다 보니 하절기에서 과대예측(overshoot) 발생)
+${poly_eq_str(cb, ib)}$
 
 **2. 동절기/하절기 분리 (HDD {WINTER_T:.0f}℃ / CDD {SUMMER_T:.0f}℃ 기준온도 참고)**
-HDD·CDD의 기준온도({WINTER_T:.0f}℃/{SUMMER_T:.0f}℃)를 분리 경계로만 참고했을 뿐, 도일(degree-day) 값 자체를
-모델에 넣지는 않습니다 — 실제기온 {WINTER_T:.0f}℃ 이하는 동절기 모델, {SUMMER_T:.0f}℃ 이상은 하절기 모델로
+실제기온 {WINTER_T:.0f}℃ 이하는 동절기 모델, {SUMMER_T:.0f}℃ 이상은 하절기 모델로
 각각 학습하고, 그 사이 구간은 두 모델의 경계값을 선형보간해 연결 (중복계상 방지)
+{item2_eq}
 
 **3. 추가 모델 (2차식)**
 하절기는 학습 표본이 적어 3차식은 계수가 불안정해지고 과적합 위험이 있어, 동절기·하절기 모두
 2차식으로 낮춰 예측을 안정화한 모델을 추가로 제공합니다 (아래 R² 비교로 개선 효과 확인 가능)
 """)
 
-    # 기준모델(단일 3차식) — 비교 지표용으로만 사용, 별도 섹션은 만들지 않음
-    model_base = make_pipeline(PolynomialFeatures(degree=3, include_bias=False), LinearRegression())
-    model_base.fit(x_train_c, y_train_c)
-
-    # 분리모델(3차식) — 2차식 채택 근거 비교용 (표/차트에는 노출하지 않고 R² 지표에만 사용)
-    models_cubic, _, _ = fit_piecewise_seasonal_models(train_df_c, x_col='검침기온', y_col=TARGET, degree=3)
-
-    # 최종모델(2차식, 동절기/하절기 분리) — 이 화면에서 실제로 채택해 보여주는 모델
     models_final, winter_data_f, summer_data_f = fit_piecewise_seasonal_models(
         train_df_c, x_col='검침기온', y_col=TARGET, degree=2)
 
