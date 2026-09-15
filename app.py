@@ -783,17 +783,14 @@ def render_cooling_analysis():
         item2_eq = f"동절기: ${poly_eq_str(cw3, iw3)}$  \n하절기: ${poly_eq_str(cs3, is3)}$"
     st.markdown(f"""
 **1. 일반적인 3차 다항식 적용**
-(단점: 겨울·여름 두 번 꺾이는 패턴을 한 곡선에 억지로 담다 보니 하절기에서 과대예측(overshoot) 발생)
+(여름, 겨울철 패턴 학습시 과대예측 발생 가능)
 ${poly_eq_str(cb, ib)}$
 
-**2. 동절기/하절기 분리 (HDD {WINTER_T:.0f}℃ / CDD {SUMMER_T:.0f}℃ 기준온도 참고)**
-실제기온 {WINTER_T:.0f}℃ 이하는 동절기 모델, {SUMMER_T:.0f}℃ 이상은 하절기 모델로
-각각 학습하고, 그 사이 구간은 두 모델의 경계값을 선형보간해 연결 (중복계상 방지)  
+**2. 동절기/하절기 분리 (HDD {WINTER_T:.0f}℃ / CDD {SUMMER_T:.0f}℃ 기준온도 참고)**  
 {item2_eq}
 
 **3. 추가 모델 (2차식)**
-하절기는 학습 표본이 적어 3차식은 계수가 불안정해지고 과적합 위험이 있어, 동절기·하절기 모두
-2차식으로 낮춰 예측을 안정화한 모델을 추가로 제공합니다
+하절기는 학습 표본이 적어, 3차식 계수 불안정
 """)
 
     models_final, winter_data_f, summer_data_f = fit_piecewise_seasonal_models(
